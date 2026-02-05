@@ -1,0 +1,8 @@
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]
+
+[target.bpfel-unknown-none]
+rustflags = ["--cfg", "bpf_target_arch=\"x86_64\""]

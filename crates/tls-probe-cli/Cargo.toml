@@ -1,0 +1,29 @@
+[package]
+name = "tls-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "eBPF-based TLS handshake capture for PQC readiness analysis"
+
+[[bin]]
+name = "tls-probe"
+path = "src/main.rs"
+
+[dependencies]
+tls-probe-common = { path = "../tls-probe-common", features = ["user"] }
+tls-probe-parser = { path = "../tls-probe-parser" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = { workspace = true, features = ["async_tokio"] }
+caps = "0.5"
+libc = "0.2"

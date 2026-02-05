@@ -1,0 +1,18 @@
+[package]
+name = "tls-probe-ebpf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "eBPF probes for TLS and network capture"
+
+# Disable test/bench targets - this is a no_std eBPF crate
+autotests = false
+autobenches = false
+
+[dependencies]
+aya-ebpf = "0.1.1"
+tls-probe-common = { path = "../tls-probe-common" }
+
+[[bin]]
+name = "tls-probe-ebpf"
+path = "src/main.rs"

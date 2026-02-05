@@ -1,0 +1,39 @@
+## <summary>TLS Probe eBPF policy interface</summary>
+
+########################################
+## <summary>
+##	Execute tls_probe in the tls_probe domain.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to transition.
+##	</summary>
+## </param>
+#
+interface(`tls_probe_domtrans',`
+	gen_require(`
+		type tls_probe_t, tls_probe_exec_t;
+	')
+
+	corecmd_search_bin($1)
+	domtrans_pattern($1, tls_probe_exec_t, tls_probe_t)
+')
+
+########################################
+## <summary>
+##	Read tls_probe log files.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(`tls_probe_read_log',`
+	gen_require(`
+		type tls_probe_log_t;
+	')
+
+	logging_search_logs($1)
+	read_files_pattern($1, tls_probe_log_t, tls_probe_log_t)
+')

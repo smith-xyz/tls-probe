@@ -1,0 +1,28 @@
+[Unit]
+Description=TLS Handshake Probe for PQC Readiness Analysis
+Documentation=https://github.com/shsmith/tls-probe
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tls-probe capture --interface auto --output /var/log/tls-probe/events.json
+Restart=on-failure
+RestartSec=5
+
+User=root
+Group=root
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/tls-probe
+ReadOnlyPaths=/sys/kernel/debug /sys/fs/bpf
+
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+
+LimitMEMLOCK=67108864
+
+[Install]
+WantedBy=multi-user.target

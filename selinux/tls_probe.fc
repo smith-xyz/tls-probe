@@ -1,0 +1,3 @@
+/usr/local/bin/tls-probe    --  gen_context(system_u:object_r:tls_probe_exec_t,s0)
+/usr/bin/tls-probe          --  gen_context(system_u:object_r:tls_probe_exec_t,s0)
+/var/log/tls-probe(/.*)?        gen_context(system_u:object_r:tls_probe_log_t,s0)
