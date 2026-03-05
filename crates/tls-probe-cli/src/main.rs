@@ -29,6 +29,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Capture(commands::capture::CaptureArgs),
+    Listeners(commands::listeners::ListenersArgs),
 }
 
 #[tokio::main]
@@ -53,5 +54,6 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Capture(args) => commands::capture::run(args).await,
+        Commands::Listeners(args) => commands::listeners::run(args),
     }
 }
