@@ -51,14 +51,11 @@ pub enum TlsAnalysis {
 impl TlsAnalysis {
     pub fn effective_version(&self) -> u16 {
         match self {
-            TlsAnalysis::ClientHello {
-                hello,
-                record_version,
-            } => hello
+            TlsAnalysis::ClientHello { hello, .. } => hello
                 .supported_versions
                 .first()
                 .copied()
-                .unwrap_or(*record_version),
+                .unwrap_or(hello.legacy_version),
             TlsAnalysis::ServerHello { hello, .. } => {
                 hello.negotiated_version.unwrap_or(hello.legacy_version)
             }
@@ -263,5 +260,52 @@ mod tests {
         let payload = build_server_hello();
         let result = parse_server_hello(&payload).unwrap();
         assert_eq!(result.legacy_version, 0x0303);
+    }
+
+    #[test]
+    fn client_hello_without_supported_versions_falls_back_to_legacy() {
+        let mut payload = Vec::new();
+
+        // Record header: content_type=handshake, version=0x0301 (TLS 1.0 compat)
+        payload.extend_from_slice(&[0x16, 0x03, 0x01]);
+        let length_pos = payload.len();
+        payload.extend_from_slice(&[0x00, 0x00]);
+
+        // Handshake header: type=ClientHello
+        payload.push(0x01);
+        let hs_length_pos = payload.len();
+        payload.extend_from_slice(&[0x00, 0x00, 0x00]);
+
+        let hello_start = payload.len();
+        // legacy_version = 0x0303 (TLS 1.2)
+        payload.extend_from_slice(&[0x03, 0x03]);
+        payload.extend_from_slice(&[0u8; 32]); // random
+        payload.push(0x00); // session_id length = 0
+        payload.extend_from_slice(&[0x00, 0x06]); // cipher suites length
+        payload.extend_from_slice(&[0x13, 0x01, 0x13, 0x02, 0x13, 0x03]);
+        payload.extend_from_slice(&[0x01, 0x00]); // compression
+
+        // Extensions: only supported_groups, NO supported_versions
+        let ext_start = payload.len();
+        payload.extend_from_slice(&[0x00, 0x00]);
+        payload.extend_from_slice(&[0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d]);
+
+        let ext_len = (payload.len() - ext_start - 2) as u16;
+        payload[ext_start] = (ext_len >> 8) as u8;
+        payload[ext_start + 1] = ext_len as u8;
+
+        let hs_len = (payload.len() - hello_start) as u32;
+        payload[hs_length_pos] = ((hs_len >> 16) & 0xFF) as u8;
+        payload[hs_length_pos + 1] = ((hs_len >> 8) & 0xFF) as u8;
+        payload[hs_length_pos + 2] = (hs_len & 0xFF) as u8;
+
+        let record_len = (payload.len() - 5) as u16;
+        payload[length_pos] = (record_len >> 8) as u8;
+        payload[length_pos + 1] = record_len as u8;
+
+        let result = parse_tls_payload(&payload, true).unwrap();
+        // Should fall back to legacy_version (0x0303 = TLS 1.2),
+        // NOT record_version (0x0301 = TLS 1.0)
+        assert_eq!(result.effective_version(), 0x0303);
     }
 }

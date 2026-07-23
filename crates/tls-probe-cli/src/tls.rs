@@ -161,14 +161,19 @@ fn is_grease(value: u16) -> bool {
 fn is_pqc_key_exchange(id: u16) -> bool {
     matches!(
         id,
-        0x0200    // ML-KEM-512
-        | 0x0201  // ML-KEM-768
-        | 0x0202  // ML-KEM-1024
-        | 0x2F00  // X25519MLKEM768
-        | 0x2F01  // SecP256r1MLKEM768
+        // Standalone ML-KEM (NIST FIPS 203, draft-connolly-tls-mlkem-key-agreement-05)
+        0x0200    // MLKEM512
+        | 0x0201  // MLKEM768
+        | 0x0202  // MLKEM1024
+        // Hybrid ML-KEM (RFC-ietf-tls-ecdhe-mlkem-05)
+        | 0x11E9  // SecP256r1MLKEM512
+        | 0x11EA  // MLKEM512X25519
+        | 0x11EB  // SecP256r1MLKEM768
+        | 0x11EC  // X25519MLKEM768
+        | 0x11ED  // SecP384r1MLKEM1024
+        // Obsoleted pre-standard Kyber (RFC-ietf-tls-ecdhe-mlkem-05 §8)
         | 0x6399  // X25519Kyber768Draft00
         | 0x639A  // SecP256r1Kyber768Draft00
-        | 0x4588 // X25519Kyber512Draft00
     )
 }
 
@@ -177,24 +182,31 @@ fn key_exchange_name(id: u16) -> &'static str {
         return "GREASE";
     }
     match id {
+        // ECDHE curves (RFC 8422)
         0x0017 => "secp256r1",
         0x0018 => "secp384r1",
         0x0019 => "secp521r1",
         0x001D => "x25519",
         0x001E => "x448",
+        // FFDHE groups (RFC 7919)
         0x0100 => "ffdhe2048",
         0x0101 => "ffdhe3072",
         0x0102 => "ffdhe4096",
         0x0103 => "ffdhe6144",
         0x0104 => "ffdhe8192",
-        0x0200 => "ML-KEM-512",
-        0x0201 => "ML-KEM-768",
-        0x0202 => "ML-KEM-1024",
-        0x2F00 => "X25519MLKEM768",
-        0x2F01 => "SecP256r1MLKEM768",
+        // Standalone ML-KEM (draft-connolly-tls-mlkem-key-agreement-05)
+        0x0200 => "MLKEM512",
+        0x0201 => "MLKEM768",
+        0x0202 => "MLKEM1024",
+        // Hybrid PQ ML-KEM (RFC-ietf-tls-ecdhe-mlkem-05)
+        0x11E9 => "SecP256r1MLKEM512",
+        0x11EA => "MLKEM512X25519",
+        0x11EB => "SecP256r1MLKEM768",
+        0x11EC => "X25519MLKEM768",
+        0x11ED => "SecP384r1MLKEM1024",
+        // Obsoleted pre-standard Kyber (RFC-ietf-tls-ecdhe-mlkem-05 §8)
         0x6399 => "X25519Kyber768Draft00",
         0x639A => "SecP256r1Kyber768Draft00",
-        0x4588 => "X25519Kyber512Draft00",
         _ => "unknown",
     }
 }
@@ -204,31 +216,69 @@ fn cipher_suite_name(id: u16) -> &'static str {
         return "GREASE";
     }
     match id {
+        // TLS 1.3 AEAD suites
         0x1301 => "TLS_AES_128_GCM_SHA256",
         0x1302 => "TLS_AES_256_GCM_SHA384",
         0x1303 => "TLS_CHACHA20_POLY1305_SHA256",
         0x1304 => "TLS_AES_128_CCM_SHA256",
         0x1305 => "TLS_AES_128_CCM_8_SHA256",
+        // ECDHE GCM
         0xC02B => "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
         0xC02C => "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
         0xC02F => "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
         0xC030 => "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+        // ECDHE CBC-SHA256/384
         0xC023 => "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
         0xC024 => "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
         0xC027 => "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
         0xC028 => "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+        // ECDHE CBC-SHA (legacy)
         0xC009 => "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
         0xC00A => "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
         0xC013 => "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
         0xC014 => "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+        // ECDHE ChaCha20
         0xCCA8 => "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
         0xCCA9 => "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+        // ECDHE 3DES (legacy)
+        0xC008 => "TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA",
+        0xC012 => "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA",
+        // ECDHE RC4 (legacy, insecure)
+        0xC007 => "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA",
+        0xC011 => "TLS_ECDHE_RSA_WITH_RC4_128_SHA",
+        // DHE RSA GCM
+        0x009E => "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+        0x009F => "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
+        // DHE RSA CBC-SHA256
+        0x0067 => "TLS_DHE_RSA_WITH_AES_128_CBC_SHA256",
+        0x006B => "TLS_DHE_RSA_WITH_AES_256_CBC_SHA256",
+        // DHE RSA CBC-SHA (legacy)
+        0x0033 => "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+        0x0039 => "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+        // DHE RSA ChaCha20
+        0xCCAA => "TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+        // DHE DSS
+        0x00A2 => "TLS_DHE_DSS_WITH_AES_128_GCM_SHA256",
+        0x00A3 => "TLS_DHE_DSS_WITH_AES_256_GCM_SHA384",
+        0x0040 => "TLS_DHE_DSS_WITH_AES_128_CBC_SHA256",
+        0x006A => "TLS_DHE_DSS_WITH_AES_256_CBC_SHA256",
+        0x0032 => "TLS_DHE_DSS_WITH_AES_128_CBC_SHA",
+        0x0038 => "TLS_DHE_DSS_WITH_AES_256_CBC_SHA",
+        // RSA GCM
         0x009C => "TLS_RSA_WITH_AES_128_GCM_SHA256",
         0x009D => "TLS_RSA_WITH_AES_256_GCM_SHA384",
+        // RSA CBC
         0x002F => "TLS_RSA_WITH_AES_128_CBC_SHA",
         0x0035 => "TLS_RSA_WITH_AES_256_CBC_SHA",
         0x003C => "TLS_RSA_WITH_AES_128_CBC_SHA256",
         0x003D => "TLS_RSA_WITH_AES_256_CBC_SHA256",
+        // RSA legacy
+        0x000A => "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
+        0x0005 => "TLS_RSA_WITH_RC4_128_SHA",
+        0x0004 => "TLS_RSA_WITH_RC4_128_MD5",
+        // Signaling
+        0x00FF => "TLS_EMPTY_RENEGOTIATION_INFO_SCSV",
+        0x5600 => "TLS_FALLBACK_SCSV",
         _ => "unknown",
     }
 }
@@ -238,22 +288,45 @@ fn signature_algorithm_name(id: u16) -> &'static str {
         return "GREASE";
     }
     match id {
+        // SHA-1 legacy
         0x0201 => "rsa_pkcs1_sha1",
+        0x0202 => "dsa_sha1",
         0x0203 => "ecdsa_sha1",
+        // SHA-224 legacy (TLS 1.2)
+        0x0301 => "rsa_pkcs1_sha224",
+        0x0302 => "dsa_sha224",
+        0x0303 => "ecdsa_sha224",
+        // SHA-256
         0x0401 => "rsa_pkcs1_sha256",
+        0x0402 => "dsa_sha256",
         0x0403 => "ecdsa_secp256r1_sha256",
+        // SHA-384
         0x0501 => "rsa_pkcs1_sha384",
+        0x0502 => "dsa_sha384",
         0x0503 => "ecdsa_secp384r1_sha384",
+        // SHA-512
         0x0601 => "rsa_pkcs1_sha512",
+        0x0602 => "dsa_sha512",
         0x0603 => "ecdsa_secp521r1_sha512",
+        // RSA PSS (RSAE)
         0x0804 => "rsa_pss_rsae_sha256",
         0x0805 => "rsa_pss_rsae_sha384",
         0x0806 => "rsa_pss_rsae_sha512",
+        // EdDSA
         0x0807 => "ed25519",
         0x0808 => "ed448",
+        // RSA PSS (PSS)
         0x0809 => "rsa_pss_pss_sha256",
         0x080A => "rsa_pss_pss_sha384",
         0x080B => "rsa_pss_pss_sha512",
+        // Brainpool (RFC 8734)
+        0x081A => "ecdsa_brainpoolP256r1tls13_sha256",
+        0x081B => "ecdsa_brainpoolP384r1tls13_sha384",
+        0x081C => "ecdsa_brainpoolP512r1tls13_sha512",
+        // ML-DSA post-quantum signatures
+        0x0904 => "mldsa44",
+        0x0905 => "mldsa65",
+        0x0906 => "mldsa87",
         _ => "unknown",
     }
 }
@@ -278,20 +351,29 @@ mod tests {
 
     #[test]
     fn pqc_key_exchange_detection() {
+        // Standalone ML-KEM
         assert!(is_pqc_key_exchange(0x0200));
         assert!(is_pqc_key_exchange(0x0201));
         assert!(is_pqc_key_exchange(0x0202));
-        assert!(is_pqc_key_exchange(0x2F00));
-        assert!(is_pqc_key_exchange(0x2F01));
+        // IANA final hybrid ML-KEM
+        assert!(is_pqc_key_exchange(0x11E9));
+        assert!(is_pqc_key_exchange(0x11EA));
+        assert!(is_pqc_key_exchange(0x11EB));
+        assert!(is_pqc_key_exchange(0x11EC));
+        assert!(is_pqc_key_exchange(0x11ED));
+        // Obsoleted pre-standard Kyber
         assert!(is_pqc_key_exchange(0x6399));
         assert!(is_pqc_key_exchange(0x639A));
-        assert!(is_pqc_key_exchange(0x4588));
 
         assert!(!is_pqc_key_exchange(0x001D));
         assert!(!is_pqc_key_exchange(0x0017));
         assert!(!is_pqc_key_exchange(0x0018));
         assert!(!is_pqc_key_exchange(0x0000));
         assert!(!is_pqc_key_exchange(0xFFFF));
+        // Unassigned values that were previously bogus entries
+        assert!(!is_pqc_key_exchange(0x2F00));
+        assert!(!is_pqc_key_exchange(0x2F01));
+        assert!(!is_pqc_key_exchange(0x4588));
     }
 
     #[test]
@@ -303,6 +385,22 @@ mod tests {
             cipher_suite_name(0xC02F),
             "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
         );
+        assert_eq!(
+            cipher_suite_name(0x009E),
+            "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"
+        );
+        assert_eq!(
+            cipher_suite_name(0x009F),
+            "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"
+        );
+        assert_eq!(
+            cipher_suite_name(0x000A),
+            "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+        );
+        assert_eq!(
+            cipher_suite_name(0x00FF),
+            "TLS_EMPTY_RENEGOTIATION_INFO_SCSV"
+        );
     }
 
     #[test]
@@ -312,11 +410,28 @@ mod tests {
     }
 
     #[test]
-    fn key_exchange_lookup_pqc() {
-        assert_eq!(key_exchange_name(0x0200), "ML-KEM-512");
-        assert_eq!(key_exchange_name(0x0201), "ML-KEM-768");
-        assert_eq!(key_exchange_name(0x2F00), "X25519MLKEM768");
+    fn key_exchange_lookup_iana_final() {
+        assert_eq!(key_exchange_name(0x0200), "MLKEM512");
+        assert_eq!(key_exchange_name(0x0201), "MLKEM768");
+        assert_eq!(key_exchange_name(0x0202), "MLKEM1024");
+        assert_eq!(key_exchange_name(0x11E9), "SecP256r1MLKEM512");
+        assert_eq!(key_exchange_name(0x11EA), "MLKEM512X25519");
+        assert_eq!(key_exchange_name(0x11EB), "SecP256r1MLKEM768");
+        assert_eq!(key_exchange_name(0x11EC), "X25519MLKEM768");
+        assert_eq!(key_exchange_name(0x11ED), "SecP384r1MLKEM1024");
+    }
+
+    #[test]
+    fn key_exchange_lookup_obsoleted_kyber() {
         assert_eq!(key_exchange_name(0x6399), "X25519Kyber768Draft00");
+        assert_eq!(key_exchange_name(0x639A), "SecP256r1Kyber768Draft00");
+    }
+
+    #[test]
+    fn key_exchange_unassigned_returns_unknown() {
+        assert_eq!(key_exchange_name(0x2F00), "unknown");
+        assert_eq!(key_exchange_name(0x2F01), "unknown");
+        assert_eq!(key_exchange_name(0x4588), "unknown");
     }
 
     #[test]
