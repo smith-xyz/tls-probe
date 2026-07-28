@@ -110,10 +110,7 @@ fn read_listeners_proc(path: &Path, parse_line: fn(&str) -> Option<Result<Listen
     let mut out = Vec::new();
     for line in content.lines().skip(1) {
         if let Some(entry) = parse_line(line) {
-            match entry {
-                Ok(e) => out.push(e),
-                Err(e) => return Err(e),
-            }
+            out.push(entry?);
         }
     }
     Ok(out)
@@ -133,7 +130,7 @@ pub fn run(args: ListenersArgs) -> Result<()> {
         if tcp6_path.exists() {
             entries.extend(read_listeners_proc(&tcp6_path, |l| parse_listen_line(l, parse_ipv6_hex))?);
         }
-        entries.sort_by(|a, b| (a.addr, a.port).cmp(&(b.addr, b.port)));
+        entries.sort_by_key(|a| (a.addr, a.port));
 
         if args.json_array {
             println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -148,7 +145,7 @@ pub fn run(args: ListenersArgs) -> Result<()> {
             }
             println!("Total: {}", entries.len());
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "linux"))]

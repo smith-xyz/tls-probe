@@ -405,8 +405,7 @@ impl TlsProbeLoader {
                         }
                     };
 
-                    for i in 0..events.read {
-                        let buf = &buffers[i];
+                    for buf in buffers.iter().take(events.read) {
                         if buf.len() >= std::mem::size_of::<RawTlsCapture>() {
                             let capture: RawTlsCapture =
                                 unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const _) };
