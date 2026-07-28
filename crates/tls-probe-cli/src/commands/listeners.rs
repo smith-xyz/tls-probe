@@ -38,7 +38,11 @@ pub struct ListenersArgs {
     #[arg(long, help = "With --json, output a single JSON array")]
     pub json_array: bool,
 
-    #[arg(long, default_value = "/proc", help = "Root path to proc filesystem (e.g. /host/proc)")]
+    #[arg(
+        long,
+        default_value = "/proc",
+        help = "Root path to proc filesystem (e.g. /host/proc)"
+    )]
     pub proc_root: String,
 }
 
@@ -49,20 +53,15 @@ pub struct ListenEntry {
 }
 
 fn parse_hex_port(s: &str) -> Result<u16> {
-    let port = u16::from_str_radix(s, 16)
-        .with_context(|| format!("invalid port hex: {}", s))?;
+    let port = u16::from_str_radix(s, 16).with_context(|| format!("invalid port hex: {}", s))?;
     Ok(port)
 }
 
 fn parse_ipv4_hex(hex: &str) -> Result<IpAddr> {
     let hex = hex.trim_start_matches('0');
-    let full = if hex.is_empty() {
-        "0"
-    } else {
-        hex
-    };
-    let value = u32::from_str_radix(full, 16)
-        .with_context(|| format!("invalid IPv4 hex: {}", hex))?;
+    let full = if hex.is_empty() { "0" } else { hex };
+    let value =
+        u32::from_str_radix(full, 16).with_context(|| format!("invalid IPv4 hex: {}", hex))?;
     let octets = value.to_be_bytes();
     Ok(IpAddr::V4(std::net::Ipv4Addr::new(
         octets[0], octets[1], octets[2], octets[3],
@@ -104,9 +103,12 @@ fn parse_listen_line(
     Some(Ok(ListenEntry { addr, port }))
 }
 
-fn read_listeners_proc(path: &Path, parse_line: fn(&str) -> Option<Result<ListenEntry>>) -> Result<Vec<ListenEntry>> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+fn read_listeners_proc(
+    path: &Path,
+    parse_line: fn(&str) -> Option<Result<ListenEntry>>,
+) -> Result<Vec<ListenEntry>> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let mut out = Vec::new();
     for line in content.lines().skip(1) {
         if let Some(entry) = parse_line(line) {
@@ -125,10 +127,14 @@ pub fn run(args: ListenersArgs) -> Result<()> {
 
         let mut entries = Vec::new();
         if tcp_path.exists() {
-            entries.extend(read_listeners_proc(&tcp_path, |l| parse_listen_line(l, parse_ipv4_hex))?);
+            entries.extend(read_listeners_proc(&tcp_path, |l| {
+                parse_listen_line(l, parse_ipv4_hex)
+            })?);
         }
         if tcp6_path.exists() {
-            entries.extend(read_listeners_proc(&tcp6_path, |l| parse_listen_line(l, parse_ipv6_hex))?);
+            entries.extend(read_listeners_proc(&tcp6_path, |l| {
+                parse_listen_line(l, parse_ipv6_hex)
+            })?);
         }
         entries.sort_by_key(|a| (a.addr, a.port));
 

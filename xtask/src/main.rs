@@ -16,7 +16,10 @@ enum Commands {
         #[arg(long, default_value = "release")]
         profile: String,
 
-        #[arg(long, help = "Target kernel arch (x86_64, aarch64). Defaults to host arch.")]
+        #[arg(
+            long,
+            help = "Target kernel arch (x86_64, aarch64). Defaults to host arch."
+        )]
         target_arch: Option<String>,
     },
     Build {
@@ -64,7 +67,10 @@ fn build_ebpf(profile: &str, target_arch: &str) -> Result<()> {
         anyhow::bail!("eBPF build failed");
     }
 
-    println!("eBPF program built successfully (target_arch={})", target_arch);
+    println!(
+        "eBPF program built successfully (target_arch={})",
+        target_arch
+    );
     Ok(())
 }
 

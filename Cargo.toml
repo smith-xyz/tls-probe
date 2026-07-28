@@ -2,11 +2,11 @@
 resolver = "2"
 members = [
     "crates/tls-probe-common",
-    "crates/tls-probe-ebpf",
     "crates/tls-probe-parser",
     "crates/tls-probe-cli",
     "xtask",
 ]
+exclude = ["crates/tls-probe-ebpf"]
 
 [workspace.package]
 version = "0.1.0"
