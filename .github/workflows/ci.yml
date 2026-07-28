@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev
+
+      - name: Install Rust nightly + bpf-linker
+        run: |
+          rustup install nightly
+          rustup component add rust-src --toolchain nightly
+          cargo +nightly install bpf-linker
+
+      - name: Build eBPF
+        run: cargo xtask build-ebpf --profile release
+
+      - name: Test
+        run: cargo test -p tls-probe-common -p tls-probe-parser -p tls-probe
+
+      - name: Clippy
+        run: cargo clippy -p tls-probe-common -p tls-probe-parser -p tls-probe -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+  build:
+    name: Build CLI (amd64)
+    runs-on: ubuntu-22.04
+    env:
+      GLIBC_MAX: "2.34"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev
+
+      - name: Install Rust nightly + bpf-linker
+        run: |
+          rustup install nightly
+          rustup component add rust-src --toolchain nightly
+          cargo +nightly install bpf-linker
+
+      - name: Build eBPF
+        run: cargo xtask build-ebpf --profile release
+
+      - name: Build release binary
+        run: cargo build --release -p tls-probe
+
+      - name: Verify glibc compatibility
+        run: |
+          MAX="${GLIBC_MAX}"
+          REQUIRED=$(readelf -V target/release/tls-probe 2>/dev/null \
+            | grep -oP 'GLIBC_\K[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          echo "Required: GLIBC_${REQUIRED}  Max allowed: GLIBC_${MAX}"
+          if [ "$(printf '%s\n' "$MAX" "$REQUIRED" | sort -V | tail -1)" != "$MAX" ]; then
+            echo "::error::Binary requires GLIBC_${REQUIRED} but RHCOS only has GLIBC_${MAX}"
+            exit 1
+          fi
