@@ -18,6 +18,8 @@ pub struct TlsAnalysis {
     pub sni: Option<String>,
     pub pqc_ready: bool,
     pub pqc_groups: Vec<&'static str>,
+    pub process_name: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +109,7 @@ fn build_analysis(capture: &RawTlsCapture, parsed: &ParsedAnalysis) -> TlsAnalys
 
     let version = parsed.effective_version();
     let tls_version = tls_version_str(version);
+    let (process_name, pid) = process_attribution(capture);
 
     TlsAnalysis {
         timestamp: chrono::Utc::now().to_rfc3339(),
@@ -121,10 +124,14 @@ fn build_analysis(capture: &RawTlsCapture, parsed: &ParsedAnalysis) -> TlsAnalys
         sni: parsed.sni().map(String::from),
         pqc_ready,
         pqc_groups,
+        process_name,
+        pid,
     }
 }
 
 fn build_fallback_analysis(capture: &RawTlsCapture) -> TlsAnalysis {
+    let (process_name, pid) = process_attribution(capture);
+
     TlsAnalysis {
         timestamp: chrono::Utc::now().to_rfc3339(),
         src: format!("{}:{}", capture.src_addr_str(), capture.src_port),
@@ -138,7 +145,28 @@ fn build_fallback_analysis(capture: &RawTlsCapture) -> TlsAnalysis {
         sni: None,
         pqc_ready: false,
         pqc_groups: Vec::new(),
+        process_name,
+        pid,
     }
+}
+
+/// Derives `(process_name, pid)` from the kprobe-attributed fields on a
+/// capture. Returns `(None, None)` when no connect-time attribution was
+/// found for the connection (e.g. the connecting process exited before the
+/// CONN_MAP entry could be read, or attribution raced the LRU eviction).
+fn process_attribution(capture: &RawTlsCapture) -> (Option<String>, Option<u32>) {
+    if capture.pid == 0 {
+        return (None, None);
+    }
+
+    let len = capture
+        .comm
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(capture.comm.len());
+    let name = String::from_utf8_lossy(&capture.comm[..len]).to_string();
+
+    (Some(name), Some(capture.pid))
 }
 
 fn tls_version_str(version: u16) -> &'static str {
@@ -173,7 +201,7 @@ fn is_pqc_key_exchange(id: u16) -> bool {
         | 0x11ED  // SecP384r1MLKEM1024
         // Obsoleted pre-standard Kyber (RFC-ietf-tls-ecdhe-mlkem-05 §8)
         | 0x6399  // X25519Kyber768Draft00
-        | 0x639A  // SecP256r1Kyber768Draft00
+        | 0x639A // SecP256r1Kyber768Draft00
     )
 }
 
@@ -393,10 +421,7 @@ mod tests {
             cipher_suite_name(0x009F),
             "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"
         );
-        assert_eq!(
-            cipher_suite_name(0x000A),
-            "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
-        );
+        assert_eq!(cipher_suite_name(0x000A), "TLS_RSA_WITH_3DES_EDE_CBC_SHA");
         assert_eq!(
             cipher_suite_name(0x00FF),
             "TLS_EMPTY_RENEGOTIATION_INFO_SCSV"

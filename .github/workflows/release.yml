@@ -1,0 +1,228 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # RHCOS 4.x ships glibc 2.34 — binaries must not exceed this
+  GLIBC_MAX: "2.34"
+
+jobs:
+  build-ebpf:
+    name: Build eBPF (${{ matrix.bpf-arch }})
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - bpf-arch: x86_64
+            artifact-suffix: amd64
+          - bpf-arch: aarch64
+            artifact-suffix: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev
+
+      - name: Install Rust nightly + bpf-linker
+        run: |
+          rustup install nightly
+          rustup component add rust-src --toolchain nightly
+          cargo +nightly install bpf-linker
+
+      - name: Build eBPF program
+        run: cargo xtask build-ebpf --profile release --target-arch ${{ matrix.bpf-arch }}
+
+      - name: Upload eBPF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tls-probe-ebpf-${{ matrix.artifact-suffix }}
+          path: target/bpfel-unknown-none/release/tls-probe-ebpf
+          if-no-files-found: error
+
+  build-cli:
+    name: Build CLI (${{ matrix.arch }})
+    needs: build-ebpf
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+            cross-packages: ""
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            cross-packages: gcc-aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compilation toolchain
+        if: matrix.cross-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross-packages }}
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Download eBPF artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tls-probe-ebpf-${{ matrix.arch }}
+          path: target/bpfel-unknown-none/release/
+
+      - name: Configure linker for cross-compilation
+        if: matrix.arch == 'arm64'
+        run: |
+          cat >> .cargo/config.toml <<'EOF'
+
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Build CLI
+        run: cargo build --release -p tls-probe --target ${{ matrix.target }}
+
+      - name: Verify glibc compatibility
+        run: |
+          MAX="${GLIBC_MAX}"
+          REQUIRED=$(readelf -V target/${{ matrix.target }}/release/tls-probe 2>/dev/null \
+            | grep -oP 'GLIBC_\K[0-9]+\.[0-9]+' | sort -Vu | tail -1)
+          echo "Required: GLIBC_${REQUIRED}  Max allowed: GLIBC_${MAX}"
+          if [ "$(printf '%s\n' "$MAX" "$REQUIRED" | sort -V | tail -1)" != "$MAX" ]; then
+            echo "::error::Binary requires GLIBC_${REQUIRED} but RHCOS only has GLIBC_${MAX}"
+            exit 1
+          fi
+
+      - name: Rename binary
+        run: |
+          cp target/${{ matrix.target }}/release/tls-probe \
+            tls-probe-linux-${{ matrix.arch }}
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tls-probe-linux-${{ matrix.arch }}
+          path: tls-probe-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev
+
+      - name: Install Rust nightly + bpf-linker
+        run: |
+          rustup install nightly
+          rustup component add rust-src --toolchain nightly
+          cargo +nightly install bpf-linker
+
+      - name: Build eBPF (needed by workspace resolution)
+        run: cargo xtask build-ebpf --profile release
+
+      - run: cargo test -p tls-probe-common -p tls-probe-parser -p tls-probe
+      - run: cargo clippy -p tls-probe-common -p tls-probe-parser -p tls-probe -- -D warnings
+      - run: cargo fmt --all -- --check
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-ebpf, build-cli, test]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release/
+          cp artifacts/tls-probe-ebpf-amd64/tls-probe-ebpf release/tls-probe-ebpf-amd64
+          cp artifacts/tls-probe-ebpf-arm64/tls-probe-ebpf release/tls-probe-ebpf-arm64
+          cp artifacts/tls-probe-linux-amd64/tls-probe-linux-amd64 release/
+          cp artifacts/tls-probe-linux-arm64/tls-probe-linux-arm64 release/
+          chmod +x release/tls-probe-linux-*
+          ls -la release/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" \
+            --title "tls-probe $TAG" \
+            --generate-notes \
+            release/tls-probe-linux-amd64 \
+            release/tls-probe-linux-arm64 \
+            release/tls-probe-ebpf-amd64 \
+            release/tls-probe-ebpf-arm64
+
+  container:
+    name: Container Image
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-ebpf, build-cli, test]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare build context
+        run: |
+          mkdir -p dist/linux/amd64 dist/linux/arm64
+          cp artifacts/tls-probe-linux-amd64/tls-probe-linux-amd64 dist/linux/amd64/tls-probe
+          cp artifacts/tls-probe-linux-arm64/tls-probe-linux-arm64 dist/linux/arm64/tls-probe
+          cp artifacts/tls-probe-ebpf-amd64/tls-probe-ebpf dist/linux/amd64/tls-probe-ebpf
+          cp artifacts/tls-probe-ebpf-arm64/tls-probe-ebpf dist/linux/arm64/tls-probe-ebpf
+          chmod +x dist/linux/*/tls-probe
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/smith-xyz/tls-probe:${{ steps.meta.outputs.tag }}
+            ghcr.io/smith-xyz/tls-probe:latest

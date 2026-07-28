@@ -7,5 +7,3 @@ description = "TLS ClientHello/ServerHello parser for tls-probe"
 [dependencies]
 thiserror = "2.0"
 
-[dev-dependencies]
-hex = "0.4"

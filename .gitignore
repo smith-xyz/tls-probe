@@ -1,7 +1,9 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
+
+# CI build context
+/dist/
 
 # eBPF build artifacts
 *.o
@@ -16,5 +18,4 @@ Cargo.lock
 .DS_Store
 
 # Capture output
-*.json
 *.pcap

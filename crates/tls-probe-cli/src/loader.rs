@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use aya::maps::AsyncPerfEventArray;
-use aya::programs::{tc, SchedClassifier, TcAttachType};
+use aya::programs::{tc, KProbe, SchedClassifier, TcAttachType};
 use aya::util::online_cpus;
 use aya::Ebpf;
 use bytes::BytesMut;
@@ -61,6 +61,10 @@ impl EbpfProgram {
 }
 
 const PERF_MAP_NAME: &str = "TLS_EVENTS";
+
+/// Names of the process-attribution kprobes, which double as the target
+/// kernel function names (`tcp_v4_connect`/`tcp_v6_connect`).
+const CONNECT_KPROBES: [&str; 2] = ["tcp_v4_connect", "tcp_v6_connect"];
 
 // --- Perf buffer tuning ---
 
@@ -259,14 +263,16 @@ impl TlsProbeLoader {
 
         if attached.is_empty() {
             return Err(ProbeError::AttachError(
-                "No probes were attached. Use --interface to specify a valid interface.".to_string(),
+                "No probes were attached. Use --interface to specify a valid interface."
+                    .to_string(),
             ));
         }
 
         Ok(attached)
     }
 
-    /// Loads ingress and egress TC programs into the kernel exactly once.
+    /// Loads ingress and egress TC programs, plus the process-attribution
+    /// kprobes, into the kernel exactly once.
     fn load_programs(&mut self) -> Result<(), ProbeError> {
         for prog in [EbpfProgram::Ingress, EbpfProgram::Egress] {
             let classifier: &mut SchedClassifier = self
@@ -285,8 +291,43 @@ impl TlsProbeLoader {
             })?;
         }
 
+        match self.load_and_attach_connect_kprobes() {
+            Ok(()) => {}
+            Err(e) => {
+                warn!("Process attribution disabled: {e}");
+                warn!("TLS capture will work but events won't have PID/process names");
+            }
+        }
+
         self.programs_loaded = true;
         info!("eBPF TC programs loaded into kernel");
+        Ok(())
+    }
+
+    /// Loads and attaches the `tcp_v4_connect`/`tcp_v6_connect` kprobes used
+    /// for process attribution. Attached globally (not per-interface): they
+    /// fire on any connect(2) call in the calling process's context.
+    fn load_and_attach_connect_kprobes(&mut self) -> Result<(), ProbeError> {
+        for name in CONNECT_KPROBES {
+            let probe: &mut KProbe = self
+                .ebpf
+                .program_mut(name)
+                .ok_or_else(|| ProbeError::AttachError(format!("{name} not found")))?
+                .try_into()
+                .map_err(|e| {
+                    ProbeError::AttachError(format!("Invalid kprobe type for {name}: {e:?}"))
+                })?;
+
+            probe
+                .load()
+                .map_err(|e| ProbeError::LoadError(format!("Failed to load {name}: {e:?}")))?;
+            probe
+                .attach(name, 0)
+                .map_err(|e| ProbeError::AttachError(format!("Failed to attach {name}: {e:?}")))?;
+
+            info!("Attached kprobe: {}", name);
+        }
+
         Ok(())
     }
 
@@ -387,16 +428,10 @@ impl TlsProbeLoader {
 
     pub fn detach(&mut self) {
         for iface in &self.attached_interfaces {
-            let _ = tc::qdisc_detach_program(
-                iface,
-                TcAttachType::Ingress,
-                EbpfProgram::Ingress.name(),
-            );
-            let _ = tc::qdisc_detach_program(
-                iface,
-                TcAttachType::Egress,
-                EbpfProgram::Egress.name(),
-            );
+            let _ =
+                tc::qdisc_detach_program(iface, TcAttachType::Ingress, EbpfProgram::Ingress.name());
+            let _ =
+                tc::qdisc_detach_program(iface, TcAttachType::Egress, EbpfProgram::Egress.name());
             info!("Detached TC programs from {}", iface);
         }
         self.attached_interfaces.clear();

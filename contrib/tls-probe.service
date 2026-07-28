@@ -1,11 +1,11 @@
 [Unit]
 Description=TLS Handshake Probe for PQC Readiness Analysis
-Documentation=https://github.com/shsmith/tls-probe
+Documentation=https://github.com/smith-xyz/tls-probe
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tls-probe capture --interface auto --output /var/log/tls-probe/events.json
+ExecStart=/usr/local/bin/tls-probe capture --ebpf /usr/local/lib/tls-probe-ebpf --interface auto --output /var/log/tls-probe/events.json
 Restart=on-failure
 RestartSec=5
 

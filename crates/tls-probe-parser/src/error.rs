@@ -13,7 +13,4 @@ pub enum ParseError {
 
     #[error("unexpected end of data at offset {0}")]
     UnexpectedEnd(usize),
-
-    #[error("invalid extension data")]
-    InvalidExtension,
 }

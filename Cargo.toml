@@ -12,7 +12,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/shsmith/tls-probe"
+repository = "https://github.com/smith-xyz/tls-probe"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -27,7 +27,6 @@ bytes = "1"
 chrono = "0.4"
 
 aya = "0.13"
-aya-log = "0.2"
 
 [profile.release]
 lto = true

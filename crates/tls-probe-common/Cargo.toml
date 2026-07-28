@@ -7,11 +7,9 @@ description = "Shared types between eBPF probes and userspace"
 
 [features]
 default = []
-user = ["dep:serde", "dep:chrono", "dep:aya"]
+user = ["dep:aya"]
 
 [dependencies]
-serde = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = { workspace = true, optional = true }

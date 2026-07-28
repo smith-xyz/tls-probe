@@ -2,9 +2,9 @@ use aya_ebpf::bindings::TC_ACT_PIPE;
 use aya_ebpf::helpers::{bpf_ktime_get_ns, bpf_skb_load_bytes};
 use aya_ebpf::macros::classifier;
 use aya_ebpf::programs::TcContext;
-use tls_probe_common::{TLS_HANDSHAKE_CLIENT_HELLO, TLS_HANDSHAKE_SERVER_HELLO};
+use tls_probe_common::{ConnKey, TLS_HANDSHAKE_CLIENT_HELLO, TLS_HANDSHAKE_SERVER_HELLO};
 
-use crate::{SCRATCH, TLS_EVENTS};
+use crate::{CONN_MAP, SCRATCH, TLS_EVENTS};
 
 const ETH_P_IP: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;
@@ -200,6 +200,19 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
         if unsafe { load_bytes_fixed::<256>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
             scratch.event.payload_len = 256;
         }
+    }
+
+    scratch.event.pid = 0;
+    scratch.event.comm = [0u8; 16];
+    let conn_key = ConnKey {
+        src_addr: scratch.event.src_addr,
+        dst_addr: scratch.event.dst_addr,
+        src_port: scratch.event.src_port,
+        dst_port: scratch.event.dst_port,
+    };
+    if let Some(info) = unsafe { CONN_MAP.get(&conn_key) } {
+        scratch.event.pid = info.pid;
+        scratch.event.comm = info.comm;
     }
 
     TLS_EVENTS.output(ctx, &scratch.event, 0);

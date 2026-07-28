@@ -17,6 +17,8 @@ pub struct RawTlsCapture {
     pub record_version: u16,
     pub payload_len: u16,
     pub payload: [u8; RAW_PAYLOAD_SIZE],
+    pub pid: u32,
+    pub comm: [u8; 16],
 }
 
 impl Default for RawTlsCapture {
@@ -32,6 +34,8 @@ impl Default for RawTlsCapture {
             record_version: 0,
             payload_len: 0,
             payload: [0u8; RAW_PAYLOAD_SIZE],
+            pid: 0,
+            comm: [0u8; 16],
         }
     }
 }
@@ -104,8 +108,10 @@ mod tests {
 
     #[test]
     fn payload_slice_caps_at_max() {
-        let mut capture = RawTlsCapture::default();
-        capture.payload_len = 5000;
+        let capture = RawTlsCapture {
+            payload_len: 5000,
+            ..Default::default()
+        };
 
         let slice = capture.payload_slice();
         assert_eq!(slice.len(), RAW_PAYLOAD_SIZE);
@@ -113,13 +119,17 @@ mod tests {
 
     #[test]
     fn handshake_type_detection() {
-        let mut capture = RawTlsCapture::default();
-
-        capture.handshake_type = TLS_HANDSHAKE_CLIENT_HELLO;
+        let capture = RawTlsCapture {
+            handshake_type: TLS_HANDSHAKE_CLIENT_HELLO,
+            ..Default::default()
+        };
         assert!(capture.is_client_hello());
         assert!(!capture.is_server_hello());
 
-        capture.handshake_type = TLS_HANDSHAKE_SERVER_HELLO;
+        let capture = RawTlsCapture {
+            handshake_type: TLS_HANDSHAKE_SERVER_HELLO,
+            ..Default::default()
+        };
         assert!(!capture.is_client_hello());
         assert!(capture.is_server_hello());
     }
@@ -138,12 +148,14 @@ mod tests {
 
     #[test]
     fn ipv6_address_formatting() {
-        let mut capture = RawTlsCapture::default();
-        capture.src_addr = [
-            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x01,
-        ];
-        capture.is_ipv6 = 1;
+        let capture = RawTlsCapture {
+            src_addr: [
+                0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x01,
+            ],
+            is_ipv6: 1,
+            ..Default::default()
+        };
 
         assert_eq!(capture.src_addr_str(), "2001:db8::1");
     }
