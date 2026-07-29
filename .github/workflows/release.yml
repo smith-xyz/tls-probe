@@ -14,11 +14,42 @@ env:
   # RHCOS 4.x ships glibc 2.34 — binaries must not exceed this
   GLIBC_MAX: "2.34"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Gate: skip multi-arch builds if checks fail
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev
+
+      - name: Install Rust nightly + bpf-linker
+        run: |
+          rustup install nightly
+          rustup component add rust-src --toolchain nightly
+          cargo +nightly install bpf-linker
+
+      - name: Build eBPF (needed by workspace resolution)
+        run: cargo xtask build-ebpf --profile release
+
+      - run: cargo test -p tls-probe-common -p tls-probe-parser -p tls-probe
+      - run: cargo clippy -p tls-probe-common -p tls-probe-parser -p tls-probe -- -D warnings
+      - run: cargo fmt --all -- --check
+
   build-ebpf:
     name: Build eBPF (${{ matrix.bpf-arch }})
+    needs: test
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: true
       matrix:
         include:
           - bpf-arch: x86_64
@@ -54,6 +85,7 @@ jobs:
     needs: build-ebpf
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: true
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -115,34 +147,10 @@ jobs:
           path: tls-probe-linux-${{ matrix.arch }}
           if-no-files-found: error
 
-  test:
-    name: Test
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm libelf-dev
-
-      - name: Install Rust nightly + bpf-linker
-        run: |
-          rustup install nightly
-          rustup component add rust-src --toolchain nightly
-          cargo +nightly install bpf-linker
-
-      - name: Build eBPF (needed by workspace resolution)
-        run: cargo xtask build-ebpf --profile release
-
-      - run: cargo test -p tls-probe-common -p tls-probe-parser -p tls-probe
-      - run: cargo clippy -p tls-probe-common -p tls-probe-parser -p tls-probe -- -D warnings
-      - run: cargo fmt --all -- --check
-
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-ebpf, build-cli, test]
+    needs: build-cli
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -183,7 +191,7 @@ jobs:
   container:
     name: Container Image
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-ebpf, build-cli, test]
+    needs: build-cli
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

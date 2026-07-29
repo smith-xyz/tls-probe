@@ -74,14 +74,22 @@ Copy `contrib/tls-probe.service` to `/etc/systemd/system/` and enable. The servi
 
 ## Container
 
-Pre-built multi-arch images are published to GHCR on each tagged release:
+Pre-built multi-arch images are published to GHCR:
+
+| Tag | When |
+|-----|------|
+| `:dev` | Every successful CI run on `main` (also `:sha-<commit>`) |
+| `:latest` / `:vX.Y.Z` | Tagged releases |
 
 ```bash
+# bleeding edge from main
+docker pull ghcr.io/smith-xyz/tls-probe:dev
+
 docker run --rm --privileged --net=host \
   -v /sys/kernel/debug:/sys/kernel/debug:ro \
   -v /sys/fs/bpf:/sys/fs/bpf \
   -v /data:/data \
-  ghcr.io/smith-xyz/tls-probe:latest
+  ghcr.io/smith-xyz/tls-probe:dev
 ```
 
 ## SELinux
@@ -99,7 +107,7 @@ git push origin v1.0.0
 
 This produces:
 - GitHub Release with `tls-probe-linux-{amd64,arm64}` and `tls-probe-ebpf-{amd64,arm64}`
-- GHCR image `ghcr.io/smith-xyz/tls-probe:<tag>` (linux/amd64 + linux/arm64)
+- GHCR image `ghcr.io/smith-xyz/tls-probe:<tag>` and `:latest` (linux/amd64 + linux/arm64)
 
 ## License
 
