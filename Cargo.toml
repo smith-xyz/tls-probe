@@ -2,11 +2,19 @@
 resolver = "2"
 members = [
     "crates/tls-probe-common",
+    "crates/tls-probe-ebpf",
     "crates/tls-probe-parser",
     "crates/tls-probe-cli",
     "xtask",
 ]
-exclude = ["crates/tls-probe-ebpf"]
+# eBPF is no_std/bpfel — exclude from default cargo check/test/clippy.
+# Build it via: cargo xtask build-ebpf
+default-members = [
+    "crates/tls-probe-common",
+    "crates/tls-probe-parser",
+    "crates/tls-probe-cli",
+    "xtask",
+]
 
 [workspace.package]
 version = "0.1.0"
