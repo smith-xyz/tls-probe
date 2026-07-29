@@ -7,6 +7,8 @@ mod error;
 #[cfg(target_os = "linux")]
 mod loader;
 #[cfg(any(target_os = "linux", test))]
+mod pipeline;
+#[cfg(any(target_os = "linux", test))]
 mod tls;
 
 use anyhow::Result;

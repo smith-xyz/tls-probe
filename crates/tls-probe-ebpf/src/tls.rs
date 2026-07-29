@@ -2,9 +2,12 @@ use aya_ebpf::bindings::TC_ACT_PIPE;
 use aya_ebpf::helpers::{bpf_ktime_get_ns, bpf_skb_load_bytes};
 use aya_ebpf::macros::classifier;
 use aya_ebpf::programs::TcContext;
-use tls_probe_common::{ConnKey, TLS_HANDSHAKE_CLIENT_HELLO, TLS_HANDSHAKE_SERVER_HELLO};
+use tls_probe_common::{
+    ConnKey, RAW_CAPTURE_HEADER_SIZE, RAW_PAYLOAD_SIZE, TLS_HANDSHAKE_CLIENT_HELLO,
+    TLS_HANDSHAKE_SERVER_HELLO,
+};
 
-use crate::{CONN_MAP, SCRATCH, TLS_EVENTS};
+use crate::{CONN_MAP, RINGBUF_DROPS, SCRATCH, TLS_EVENTS};
 
 const ETH_P_IP: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;
@@ -39,6 +42,28 @@ unsafe fn load_bytes_fixed<const N: u32>(ctx: &TcContext, offset: usize, dst: *m
 }
 
 #[inline(always)]
+unsafe fn ptr_at<T>(ctx: &TcContext, offset: usize) -> Option<*const T> {
+    let data = ctx.data();
+    let data_end = ctx.data_end();
+    let start = data + offset;
+    let end = start + core::mem::size_of::<T>();
+    if end > data_end {
+        return None;
+    }
+    Some(start as *const T)
+}
+
+#[inline(always)]
+unsafe fn read_u8(ctx: &TcContext, offset: usize) -> Option<u8> {
+    Some(*ptr_at::<u8>(ctx, offset)?)
+}
+
+#[inline(always)]
+unsafe fn read_u16_be(ctx: &TcContext, offset: usize) -> Option<u16> {
+    Some(u16::from_be(*ptr_at::<u16>(ctx, offset)?))
+}
+
+#[inline(always)]
 fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
     let pkt_len = ctx.len() as usize;
 
@@ -46,46 +71,53 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
         return Ok(());
     }
 
-    let mut eth_proto_bytes = [0u8; 2];
-    if !unsafe { load_bytes_fixed::<2>(ctx, 12, eth_proto_bytes.as_mut_ptr()) } {
-        return Ok(());
-    }
-    let eth_proto = u16::from_be_bytes(eth_proto_bytes);
+    let eth_proto = match unsafe { read_u16_be(ctx, 12) } {
+        Some(v) => v,
+        None => return Ok(()),
+    };
 
-    let (is_ipv6, ip_hdr_len, proto_offset, src_offset, dst_offset) = match eth_proto {
+    let (is_ipv6, ip_hdr_len, src_offset, dst_offset) = match eth_proto {
         ETH_P_IP => {
-            let mut version_ihl = [0u8; 1];
-            if !unsafe { load_bytes_fixed::<1>(ctx, 14, version_ihl.as_mut_ptr()) } {
+            let ip_proto = match unsafe { read_u8(ctx, 23) } {
+                Some(v) => v,
+                None => return Ok(()),
+            };
+            if ip_proto != IPPROTO_TCP {
                 return Ok(());
             }
-            let ip_hdr_len = ((version_ihl[0] & 0x0F) as usize) * 4;
+            let version_ihl = match unsafe { read_u8(ctx, 14) } {
+                Some(v) => v,
+                None => return Ok(()),
+            };
+            let ip_hdr_len = ((version_ihl & 0x0F) as usize) * 4;
             if ip_hdr_len < MIN_IP_HDR_LEN {
                 return Ok(());
             }
-            (false, ip_hdr_len, 23usize, 26usize, 30usize)
+            (false, ip_hdr_len, 26usize, 30usize)
         }
-        ETH_P_IPV6 => (true, IPV6_HDR_LEN, 20usize, 22usize, 38usize),
+        ETH_P_IPV6 => {
+            let ip_proto = match unsafe { read_u8(ctx, 20) } {
+                Some(v) => v,
+                None => return Ok(()),
+            };
+            if ip_proto != IPPROTO_TCP {
+                return Ok(());
+            }
+            (true, IPV6_HDR_LEN, 22usize, 38usize)
+        }
         _ => return Ok(()),
     };
-
-    let mut ip_proto = [0u8; 1];
-    if !unsafe { load_bytes_fixed::<1>(ctx, proto_offset, ip_proto.as_mut_ptr()) } {
-        return Ok(());
-    }
-    if ip_proto[0] != IPPROTO_TCP {
-        return Ok(());
-    }
 
     let tcp_start = ETH_HDR_LEN + ip_hdr_len;
 
     if tcp_start + 13 > pkt_len {
         return Ok(());
     }
-    let mut tcp_off_byte = [0u8; 1];
-    if !unsafe { load_bytes_fixed::<1>(ctx, tcp_start + 12, tcp_off_byte.as_mut_ptr()) } {
-        return Ok(());
-    }
-    let tcp_data_off = ((tcp_off_byte[0] >> 4) as usize) * 4;
+    let tcp_off_byte = match unsafe { read_u8(ctx, tcp_start + 12) } {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    let tcp_data_off = ((tcp_off_byte >> 4) as usize) * 4;
     if tcp_data_off < MIN_TCP_HDR_LEN || tcp_data_off > 60 {
         return Ok(());
     }
@@ -95,22 +127,27 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
     if tls_start + TLS_RECORD_HDR_LEN + 1 > pkt_len {
         return Ok(());
     }
-    let mut tls_hdr = [0u8; 6];
-    if !unsafe { load_bytes_fixed::<6>(ctx, tls_start, tls_hdr.as_mut_ptr()) } {
-        return Ok(());
-    }
 
-    let content_type = tls_hdr[0];
+    let content_type = match unsafe { read_u8(ctx, tls_start) } {
+        Some(v) => v,
+        None => return Ok(()),
+    };
     if content_type != TLS_CONTENT_HANDSHAKE {
         return Ok(());
     }
 
-    let record_version = u16::from_be_bytes([tls_hdr[1], tls_hdr[2]]);
+    let record_version = match unsafe { read_u16_be(ctx, tls_start + 1) } {
+        Some(v) => v,
+        None => return Ok(()),
+    };
     if record_version < 0x0300 || record_version > 0x0303 {
         return Ok(());
     }
 
-    let hs_type = tls_hdr[5];
+    let hs_type = match unsafe { read_u8(ctx, tls_start + 5) } {
+        Some(v) => v,
+        None => return Ok(()),
+    };
     if hs_type != TLS_HANDSHAKE_CLIENT_HELLO && hs_type != TLS_HANDSHAKE_SERVER_HELLO {
         return Ok(());
     }
@@ -168,12 +205,16 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
     if tcp_start + 4 > pkt_len {
         return Ok(());
     }
-    let mut ports = [0u8; 4];
-    if !unsafe { load_bytes_fixed::<4>(ctx, tcp_start, ports.as_mut_ptr()) } {
-        return Ok(());
-    }
-    scratch.event.src_port = u16::from_be_bytes([ports[0], ports[1]]);
-    scratch.event.dst_port = u16::from_be_bytes([ports[2], ports[3]]);
+    let src_port = match unsafe { read_u16_be(ctx, tcp_start) } {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    let dst_port = match unsafe { read_u16_be(ctx, tcp_start + 2) } {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    scratch.event.src_port = src_port;
+    scratch.event.dst_port = dst_port;
 
     if !is_egress {
         let tmp = scratch.event.src_port;
@@ -200,6 +241,14 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
         if unsafe { load_bytes_fixed::<256>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
             scratch.event.payload_len = 256;
         }
+    } else if payload_avail >= 128 {
+        if unsafe { load_bytes_fixed::<128>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
+            scratch.event.payload_len = 128;
+        }
+    } else if payload_avail >= 64 {
+        if unsafe { load_bytes_fixed::<64>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
+            scratch.event.payload_len = 64;
+        }
     }
 
     scratch.event.pid = 0;
@@ -215,6 +264,15 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
         scratch.event.comm = info.comm;
     }
 
-    TLS_EVENTS.output(ctx, &scratch.event, 0);
+    let payload_len = scratch.event.payload_len as usize;
+    let capped_payload = payload_len.min(RAW_PAYLOAD_SIZE);
+    let total_len = RAW_CAPTURE_HEADER_SIZE + capped_payload;
+    let event_ptr = &scratch.event as *const _ as *const u8;
+    let event_bytes = unsafe { core::slice::from_raw_parts(event_ptr, total_len) };
+    if TLS_EVENTS.output::<[u8]>(event_bytes, 0).is_err() {
+        if let Some(cnt) = RINGBUF_DROPS.get_ptr_mut(0) {
+            unsafe { *cnt += 1 };
+        }
+    }
     Ok(())
 }

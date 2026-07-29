@@ -1,6 +1,10 @@
 pub const RAW_PAYLOAD_SIZE: usize = 1400;
 const ADDR_SIZE: usize = 16;
 
+/// Size of the fixed header portion of [`RawTlsCapture`] (all fields except `payload`).
+/// Used by the ringbuf transport to emit only header + actual payload bytes.
+pub const RAW_CAPTURE_HEADER_SIZE: usize = 8 + 16 + 16 + 2 + 2 + 1 + 1 + 2 + 2 + 2 + 4 + 16; // 72 with repr(C) padding before pid
+
 pub const TLS_HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
 pub const TLS_HANDSHAKE_SERVER_HELLO: u8 = 0x02;
 
@@ -16,9 +20,10 @@ pub struct RawTlsCapture {
     pub handshake_type: u8,
     pub record_version: u16,
     pub payload_len: u16,
-    pub payload: [u8; RAW_PAYLOAD_SIZE],
     pub pid: u32,
     pub comm: [u8; 16],
+    /// Must remain last — variable-length tail for ringbuf wire format.
+    pub payload: [u8; RAW_PAYLOAD_SIZE],
 }
 
 impl Default for RawTlsCapture {
@@ -33,9 +38,9 @@ impl Default for RawTlsCapture {
             handshake_type: 0,
             record_version: 0,
             payload_len: 0,
-            payload: [0u8; RAW_PAYLOAD_SIZE],
             pid: 0,
             comm: [0u8; 16],
+            payload: [0u8; RAW_PAYLOAD_SIZE],
         }
     }
 }
@@ -83,7 +88,11 @@ unsafe impl aya::Pod for RawTlsCapture {}
 
 #[cfg(all(test, feature = "user"))]
 mod tests {
+    use core::mem::offset_of;
+
     use super::*;
+
+    const _: () = assert!(offset_of!(RawTlsCapture, payload) == RAW_CAPTURE_HEADER_SIZE);
 
     #[test]
     fn default_values() {

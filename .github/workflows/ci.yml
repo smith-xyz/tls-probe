@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -152,9 +154,61 @@ jobs:
           path: tls-probe-linux-${{ matrix.arch }}
           if-no-files-found: error
 
+  smoke-test:
+    name: Smoke Test (eBPF runtime)
+    needs: build-cli
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve runner architecture
+        id: arch
+        run: |
+          case "$(uname -m)" in
+            x86_64)  echo "arch=amd64" >> "$GITHUB_OUTPUT" ;;
+            aarch64) echo "arch=arm64" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::No tls-probe artifact for runner arch $(uname -m)"; exit 1 ;;
+          esac
+
+      - name: Download CLI binary
+        uses: actions/download-artifact@v4
+        with:
+          name: tls-probe-linux-${{ steps.arch.outputs.arch }}
+          path: smoke/
+
+      - name: Download eBPF object
+        uses: actions/download-artifact@v4
+        with:
+          name: tls-probe-ebpf-${{ steps.arch.outputs.arch }}
+          path: smoke/
+
+      # Installed as root because the smoke test runs under sudo. The script
+      # falls back to a builtin validator if this is unavailable.
+      - name: Install schema validator
+        run: sudo python3 -m pip install --quiet jsonschema
+
+      - name: Run smoke test
+        run: |
+          chmod +x smoke/tls-probe-linux-${{ steps.arch.outputs.arch }}
+          sudo python3 scripts/smoke_test.py \
+            --probe smoke/tls-probe-linux-${{ steps.arch.outputs.arch }} \
+            --ebpf smoke/tls-probe-ebpf \
+            --schema specs/capture-event.schema.json \
+            --workdir smoke/run
+
+      - name: Upload smoke test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-${{ steps.arch.outputs.arch }}
+          path: smoke/run/
+          if-no-files-found: warn
+
   container:
     name: Container Image (dev)
-    needs: build-cli
+    # Gate the :dev tag on the runtime smoke test, not just on it compiling.
+    needs: [build-cli, smoke-test]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

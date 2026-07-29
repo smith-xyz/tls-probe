@@ -7,5 +7,6 @@ pub mod domains;
 
 pub use domains::process::{ConnInfo, ConnKey, COMM_SIZE};
 pub use domains::tls::{
-    RawTlsCapture, RAW_PAYLOAD_SIZE, TLS_HANDSHAKE_CLIENT_HELLO, TLS_HANDSHAKE_SERVER_HELLO,
+    RawTlsCapture, RAW_CAPTURE_HEADER_SIZE, RAW_PAYLOAD_SIZE, TLS_HANDSHAKE_CLIENT_HELLO,
+    TLS_HANDSHAKE_SERVER_HELLO,
 };

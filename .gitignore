@@ -19,3 +19,8 @@
 
 # Capture output
 *.pcap
+
+# Smoke test run artifacts
+__pycache__
+/smoke/
+/smoke-run/

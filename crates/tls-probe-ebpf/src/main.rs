@@ -5,11 +5,11 @@ mod process;
 mod tls;
 
 use aya_ebpf::macros::map;
-use aya_ebpf::maps::{LruHashMap, PerCpuArray, PerfEventArray};
+use aya_ebpf::maps::{LruHashMap, PerCpuArray, RingBuf};
 use tls_probe_common::{ConnInfo, ConnKey, RawTlsCapture};
 
 #[map(name = "TLS_EVENTS")]
-static TLS_EVENTS: PerfEventArray<RawTlsCapture> = PerfEventArray::new(0);
+static TLS_EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 
 /// Connections observed via the `tcp_v4_connect`/`tcp_v6_connect` kprobes,
 /// keyed by 4-tuple so the TC classifier can attribute a TLS handshake to
@@ -24,6 +24,9 @@ pub struct ScratchBuf {
 
 #[map(name = "SCRATCH")]
 static SCRATCH: PerCpuArray<ScratchBuf> = PerCpuArray::with_max_entries(1, 0);
+
+#[map(name = "RINGBUF_DROPS")]
+static RINGBUF_DROPS: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
 
 #[cfg(not(test))]
 #[panic_handler]

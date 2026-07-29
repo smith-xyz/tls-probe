@@ -1,0 +1,143 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TLS Capture Event",
+  "description": "One JSONL line from tls-probe capture output",
+  "type": "object",
+  "required": [
+    "cipher_suites",
+    "dst",
+    "handshake_type",
+    "key_exchange_groups",
+    "signature_algorithms",
+    "src",
+    "timestamp",
+    "timestamp_ns",
+    "tls_version"
+  ],
+  "properties": {
+    "cipher_suites": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/CipherSuiteInfo"
+      }
+    },
+    "dst": {
+      "description": "Destination address:port",
+      "type": "string"
+    },
+    "handshake_type": {
+      "type": "string"
+    },
+    "key_exchange_groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/KeyExchangeInfo"
+      }
+    },
+    "key_share_group": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/KeyExchangeInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pid": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "process_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "signature_algorithms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SignatureAlgorithmInfo"
+      }
+    },
+    "sni": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "src": {
+      "description": "Source address:port",
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "timestamp_ns": {
+      "description": "Monotonic ktime from bpf_ktime_get_ns()",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "tls_version": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "CipherSuiteInfo": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "KeyExchangeInfo": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "SignatureAlgorithmInfo": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

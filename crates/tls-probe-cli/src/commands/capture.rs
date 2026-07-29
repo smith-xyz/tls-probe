@@ -8,20 +8,13 @@ use anyhow::Context;
 #[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
-use std::io::{BufWriter, Write};
-#[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
-use tracing::info;
-
+use std::time::Instant;
 #[cfg(target_os = "linux")]
-const DEFAULT_EBPF_PATH: &str = "target/bpfel-unknown-none/release/tls-probe-ebpf";
-#[cfg(target_os = "linux")]
-const EVENT_CHANNEL_CAPACITY: usize = 1000;
-#[cfg(target_os = "linux")]
-const POLL_INTERVAL_MS: u64 = 100;
+use tracing::{debug, info, Level};
 
 #[derive(Args, Default)]
 pub struct CaptureArgs {
@@ -45,6 +38,18 @@ pub struct CaptureArgs {
     )]
     pub output_timestamped: bool,
 
+    #[arg(
+        long,
+        help = "Maximum bytes per output chunk before rotation (required for file output)"
+    )]
+    pub max_output_bytes: Option<u64>,
+
+    #[arg(
+        long,
+        help = "Maximum total spool size; evict oldest complete chunks when exceeded"
+    )]
+    pub max_total_bytes: Option<u64>,
+
     #[arg(long, help = "Path to compiled eBPF program")]
     pub ebpf: Option<PathBuf>,
 
@@ -57,6 +62,13 @@ pub struct CaptureArgs {
     pub interface: String,
 }
 
+#[cfg(target_os = "linux")]
+const DEFAULT_EBPF_PATH: &str = "target/bpfel-unknown-none/release/tls-probe-ebpf";
+#[cfg(target_os = "linux")]
+const EVENT_CHANNEL_CAPACITY: usize = 1000;
+#[cfg(target_os = "linux")]
+const POLL_INTERVAL_MS: u64 = 100;
+
 /// Captures TLS handshake events via eBPF and streams them as JSONL.
 ///
 /// Takes ownership of `args` (consumed during setup). Events are written
@@ -67,6 +79,10 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
     {
         use crate::capabilities::{check_capabilities, ensure_memlock_rlimit};
         use crate::loader::{detect_interfaces, TlsProbeLoader};
+        use crate::pipeline::{
+            run_writer_thread, sum_kernel_drops, BufferedLineWriter, RotatingSpoolWriter,
+            WriterBackend, COUNTER_LOG_INTERVAL, WRITE_CHANNEL_CAPACITY,
+        };
         use crate::tls::analyze_capture;
         use tls_probe_common::RawTlsCapture;
         use tokio::sync::mpsc;
@@ -96,13 +112,111 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
         info!("Attached {} probes", attached.len());
         info!("Probes attached: {:?}", attached);
 
-        let (tx, mut rx) = mpsc::channel::<RawTlsCapture>(EVENT_CHANNEL_CAPACITY);
+        let kernel_drops_map = loader.take_kernel_drops_map();
+
+        let events_dropped = Arc::new(AtomicU64::new(0));
+        let events_emitted = Arc::new(AtomicU64::new(0));
+        let chunks_evicted = Arc::new(AtomicU64::new(0));
         let running = Arc::new(AtomicBool::new(true));
 
-        let running_for_loop = running.clone();
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = loader.run(tx_clone, running_for_loop).await {
+        let (capture_tx, mut capture_rx) = mpsc::channel::<RawTlsCapture>(EVENT_CHANNEL_CAPACITY);
+        let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(WRITE_CHANNEL_CAPACITY);
+
+        let emit_to_stdout = args.output.is_none();
+        let verbose_events = tracing::enabled!(Level::DEBUG);
+
+        let file_backend = match &args.output {
+            Some(output_path) => {
+                if let Some(max_chunk_bytes) = args.max_output_bytes {
+                    info!(
+                        "Streaming events (JSONL) to spool dir {:?} (max chunk {} bytes)",
+                        output_path, max_chunk_bytes
+                    );
+                    let spool = RotatingSpoolWriter::new(
+                        output_path.clone(),
+                        max_chunk_bytes,
+                        args.max_total_bytes,
+                        chunks_evicted.clone(),
+                    )
+                    .with_context(|| format!("Failed to open spool directory {:?}", output_path))?;
+                    Some(WriterBackend::Spool(spool))
+                } else {
+                    let final_path = if args.output_timestamped {
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let stem = output_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        let ext = output_path
+                            .extension()
+                            .map(|e| e.to_string_lossy().to_string());
+                        let new_name = match ext {
+                            Some(e) => format!("{}-{}.{}", stem, ts, e),
+                            None => format!("{}-{}", stem, ts),
+                        };
+                        output_path.with_file_name(new_name)
+                    } else {
+                        output_path.clone()
+                    };
+                    info!("Streaming events (JSONL) to: {:?}", final_path);
+                    let file = File::create(&final_path).with_context(|| {
+                        format!("Failed to create output file {:?}", final_path)
+                    })?;
+                    Some(WriterBackend::Plain(BufferedLineWriter::new(file)))
+                }
+            }
+            None => None,
+        };
+
+        let events_emitted_writer = events_emitted.clone();
+        let writer_handle = std::thread::spawn(move || {
+            run_writer_thread(
+                writer_rx,
+                file_backend,
+                emit_to_stdout,
+                events_emitted_writer,
+            );
+        });
+
+        let writer_tx_worker = writer_tx.clone();
+        let worker_handle = tokio::spawn(async move {
+            while let Some(capture) = capture_rx.recv().await {
+                let analysis = analyze_capture(&capture);
+
+                if verbose_events {
+                    debug!(
+                        "{}: {} -> {}, {}, {} ciphers{}",
+                        analysis.handshake_type,
+                        analysis.src,
+                        analysis.dst,
+                        analysis.tls_version,
+                        analysis.cipher_suites.len(),
+                        analysis
+                            .sni
+                            .as_ref()
+                            .map(|s| format!(" ({s})"))
+                            .unwrap_or_default()
+                    );
+                }
+
+                let mut line = serde_json::to_vec(&analysis).unwrap_or_default();
+                line.push(b'\n');
+                if writer_tx_worker.send(line).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let running_for_loader = running.clone();
+        let events_dropped_loader = events_dropped.clone();
+        let loader_handle = tokio::spawn(async move {
+            if let Err(e) = loader
+                .run(capture_tx, events_dropped_loader, running_for_loader)
+                .await
+            {
                 tracing::error!("Event loop error: {}", e);
             }
         });
@@ -117,38 +231,8 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
         }
         info!("Press Ctrl+C to stop");
 
-        let mut writer: Option<BufWriter<File>> = match &args.output {
-            Some(output_path) => {
-                let final_path = if args.output_timestamped {
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let stem = output_path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy();
-                    let ext = output_path
-                        .extension()
-                        .map(|e| e.to_string_lossy().to_string());
-                    let new_name = match ext {
-                        Some(e) => format!("{}-{}.{}", stem, ts, e),
-                        None => format!("{}-{}", stem, ts),
-                    };
-                    output_path.with_file_name(new_name)
-                } else {
-                    output_path.clone()
-                };
-                info!("Streaming events (JSONL) to: {:?}", final_path);
-                let file = File::create(&final_path)
-                    .with_context(|| format!("Failed to create output file {:?}", final_path))?;
-                Some(BufWriter::new(file))
-            }
-            None => None,
-        };
-
-        let emit_to_stdout = args.output.is_none();
-        let start = std::time::Instant::now();
+        let start = Instant::now();
+        let mut last_counter_log = Instant::now();
 
         let running_clone = running.clone();
         tokio::spawn(async move {
@@ -167,59 +251,47 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
         });
 
         loop {
-            tokio::select! {
-                Some(capture) = rx.recv() => {
-                    let analysis = analyze_capture(&capture);
+            sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
 
-                    if let Some(w) = writer.as_mut() {
-                        serde_json::to_writer(&mut *w, &analysis)
-                            .with_context(|| "Failed to serialize event")?;
-                        w.write_all(b"\n")
-                            .with_context(|| "Failed to write newline")?;
-                        w.flush()
-                            .with_context(|| "Failed to flush event to disk")?;
-                    }
+            if last_counter_log.elapsed() >= COUNTER_LOG_INTERVAL {
+                let kernel_lost = sum_kernel_drops(kernel_drops_map.as_ref());
+                info!(
+                    "counters: emitted={} dropped={} kernel_lost={} chunks_evicted={}",
+                    events_emitted.load(Ordering::Relaxed),
+                    events_dropped.load(Ordering::Relaxed),
+                    kernel_lost,
+                    chunks_evicted.load(Ordering::Relaxed)
+                );
+                last_counter_log = Instant::now();
+            }
 
-                    if emit_to_stdout {
-                        let json = serde_json::to_string(&analysis)
-                            .with_context(|| "Failed to serialize event for stdout")?;
-                        println!("{}", json);
-                    } else {
-                        info!(
-                            "{}: {} -> {}, {}, {} ciphers{}{}",
-                            analysis.handshake_type,
-                            analysis.src,
-                            analysis.dst,
-                            analysis.tls_version,
-                            analysis.cipher_suites.len(),
-                            if analysis.pqc_ready { " [PQC]" } else { "" },
-                            analysis.sni.as_ref().map(|s| format!(" ({})", s)).unwrap_or_default()
-                        );
-
-                        if analysis.pqc_ready {
-                            info!("  PQC groups: {:?}", analysis.pqc_groups);
-                        }
-                    }
-                }
-                _ = sleep(Duration::from_millis(POLL_INTERVAL_MS)) => {
-                    if !continuous && start.elapsed().as_secs() >= duration_secs {
-                        info!("Capture duration reached");
-                        break;
-                    }
-                    if !running.load(Ordering::Relaxed) {
-                        info!("Capture interrupted");
-                        break;
-                    }
-                }
+            if !continuous && start.elapsed().as_secs() >= duration_secs {
+                info!("Capture duration reached");
+                break;
+            }
+            if !running.load(Ordering::Relaxed) {
+                info!("Capture interrupted");
+                break;
             }
         }
 
         running.store(false, Ordering::Relaxed);
 
-        if let Some(mut w) = writer.take() {
-            w.flush()
-                .with_context(|| "Failed final flush to output file")?;
-        }
+        let _ = loader_handle.await;
+        drop(writer_tx);
+        let _ = worker_handle.await;
+        writer_handle
+            .join()
+            .map_err(|e| anyhow::anyhow!("writer thread panicked: {e:?}"))?;
+
+        let kernel_lost = sum_kernel_drops(kernel_drops_map.as_ref());
+        info!(
+            "counters: emitted={} dropped={} kernel_lost={} chunks_evicted={}",
+            events_emitted.load(Ordering::Relaxed),
+            events_dropped.load(Ordering::Relaxed),
+            kernel_lost,
+            chunks_evicted.load(Ordering::Relaxed)
+        );
     }
 
     #[cfg(not(target_os = "linux"))]

@@ -1,4 +1,4 @@
-.PHONY: all build release build-ebpf build-ebpf-release build-cli build-cli-release clean test check fmt fmt-check dev help selinux-build selinux-install
+.PHONY: all build release build-ebpf build-ebpf-release build-cli build-cli-release clean test check fmt fmt-check dev help selinux-build selinux-install smoke
 
 CARGO := cargo
 TARGET_DIR := target
@@ -36,6 +36,7 @@ help:
 	@echo "  build          - Build everything (eBPF + CLI) in debug mode"
 	@echo "  release        - Build everything in release mode"
 	@echo "  build-ebpf     - Build eBPF probes"
+	@echo "  smoke          - Run the runtime smoke test (needs root; builds release first)"
 	@echo ""
 	@echo "SELinux (RHEL/Fedora):"
 	@echo "  selinux-build  - Build SELinux policy module"
@@ -71,6 +72,14 @@ fmt:
 
 fmt-check:
 	$(CARGO) fmt --all -- --check
+
+# Same script CI runs. Root is required to load and attach the probes.
+smoke: release
+	sudo python3 scripts/smoke_test.py \
+		--probe target/release/tls-probe \
+		--ebpf target/bpfel-unknown-none/release/tls-probe-ebpf \
+		--schema specs/capture-event.schema.json \
+		--workdir smoke-run
 
 selinux-build:
 	cd selinux && make

@@ -10,7 +10,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-aya-ebpf = "0.1.1"
+aya-ebpf = "0.2"
 tls-probe-common = { path = "../tls-probe-common" }
 
 [[bin]]

@@ -1,15 +1,14 @@
 use std::fs;
 use std::net::IpAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use aya::maps::AsyncPerfEventArray;
+use aya::maps::RingBuf;
 use aya::programs::{tc, KProbe, SchedClassifier, TcAttachType};
-use aya::util::online_cpus;
 use aya::Ebpf;
-use bytes::BytesMut;
-use tls_probe_common::RawTlsCapture;
+use tls_probe_common::{RawTlsCapture, RAW_CAPTURE_HEADER_SIZE};
+use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -60,15 +59,13 @@ impl EbpfProgram {
     }
 }
 
-const PERF_MAP_NAME: &str = "TLS_EVENTS";
+const TLS_EVENTS_MAP_NAME: &str = "TLS_EVENTS";
+const RINGBUF_DROPS_MAP_NAME: &str = "RINGBUF_DROPS";
 
 /// Names of the process-attribution kprobes, which double as the target
 /// kernel function names (`tcp_v4_connect`/`tcp_v6_connect`).
 const CONNECT_KPROBES: [&str; 2] = ["tcp_v4_connect", "tcp_v6_connect"];
 
-// --- Perf buffer tuning ---
-
-const PERF_BUFFER_COUNT: usize = 10;
 const EVENT_LOOP_POLL_MS: u64 = 100;
 
 /// Resolve the `--interface` argument into a list of concrete interface names.
@@ -366,61 +363,93 @@ impl TlsProbeLoader {
         Ok(())
     }
 
-    /// Starts reading TLS capture events from the perf buffer, forwarding to the channel.
+    /// Takes the kernel-side ringbuf drop counter map for periodic userspace reads.
+    pub fn take_kernel_drops_map(
+        &mut self,
+    ) -> Option<aya::maps::PerCpuArray<aya::maps::MapData, u64>> {
+        self.ebpf
+            .take_map(RINGBUF_DROPS_MAP_NAME)
+            .and_then(|m| aya::maps::PerCpuArray::try_from(m).ok())
+    }
+
+    /// Starts reading TLS capture events from the ring buffer, forwarding to the channel.
     /// Runs until `running` is set to false.
     pub async fn run(
         &mut self,
         event_tx: mpsc::Sender<RawTlsCapture>,
+        events_dropped: Arc<AtomicU64>,
         running: Arc<AtomicBool>,
     ) -> Result<(), ProbeError> {
-        let mut perf_array: AsyncPerfEventArray<_> = self
+        let map = self
             .ebpf
-            .take_map(PERF_MAP_NAME)
-            .ok_or_else(|| ProbeError::MapNotFound(PERF_MAP_NAME.to_string()))?
-            .try_into()
-            .map_err(|e| ProbeError::MapNotFound(format!("Failed to convert map: {:?}", e)))?;
+            .take_map(TLS_EVENTS_MAP_NAME)
+            .ok_or_else(|| ProbeError::MapNotFound(TLS_EVENTS_MAP_NAME.to_string()))?;
 
-        let cpus = online_cpus()
-            .map_err(|e| ProbeError::LoadError(format!("Failed to get online CPUs: {:?}", e)))?;
+        let ring_buf = RingBuf::try_from(map).map_err(|e| {
+            ProbeError::MapNotFound(format!("Failed to convert TLS_EVENTS map: {:?}", e))
+        })?;
 
-        for cpu_id in cpus {
-            let mut buf = perf_array
-                .open(cpu_id, None)
-                .map_err(|e| ProbeError::LoadError(format!("Failed to open perf buffer: {}", e)))?;
+        let mut async_fd = AsyncFd::new(ring_buf).map_err(|e| {
+            ProbeError::LoadError(format!("Failed to create async ringbuf fd: {e}"))
+        })?;
 
-            let tx = event_tx.clone();
-            let running = running.clone();
+        let running_drain = running.clone();
+        let drain = tokio::spawn(async move {
+            loop {
+                if !running_drain.load(Ordering::Relaxed) {
+                    break;
+                }
 
-            tokio::spawn(async move {
-                let mut buffers = (0..PERF_BUFFER_COUNT)
-                    .map(|_| BytesMut::with_capacity(std::mem::size_of::<RawTlsCapture>()))
-                    .collect::<Vec<_>>();
+                let mut guard = match async_fd.readable_mut().await {
+                    Ok(guard) => guard,
+                    Err(e) => {
+                        error!("Error polling ringbuf: {e}");
+                        continue;
+                    }
+                };
 
-                while running.load(Ordering::Relaxed) {
-                    let events = match buf.read_events(&mut buffers).await {
-                        Ok(events) => events,
-                        Err(e) => {
-                            error!("Error reading perf events: {}", e);
-                            continue;
-                        }
-                    };
+                loop {
+                    let ring_buf = guard.get_inner_mut();
+                    match ring_buf.next() {
+                        Some(item) => {
+                            let bytes = &*item;
+                            if bytes.len() < RAW_CAPTURE_HEADER_SIZE {
+                                continue;
+                            }
 
-                    for buf in buffers.iter().take(events.read) {
-                        if buf.len() >= std::mem::size_of::<RawTlsCapture>() {
-                            let capture: RawTlsCapture =
-                                unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const _) };
-                            if tx.send(capture).await.is_err() {
-                                return;
+                            let mut capture = RawTlsCapture::default();
+                            let copy_len = bytes.len().min(std::mem::size_of::<RawTlsCapture>());
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    bytes.as_ptr(),
+                                    &mut capture as *mut _ as *mut u8,
+                                    copy_len,
+                                );
+                            }
+
+                            match event_tx.try_send(capture) {
+                                Ok(()) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                    events_dropped.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                    return;
+                                }
                             }
                         }
+                        None => break,
                     }
                 }
-            });
-        }
+
+                guard.clear_ready();
+            }
+        });
 
         while running.load(Ordering::Relaxed) {
             tokio::time::sleep(tokio::time::Duration::from_millis(EVENT_LOOP_POLL_MS)).await;
         }
+
+        drain.abort();
 
         Ok(())
     }

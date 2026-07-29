@@ -1,13 +1,23 @@
 #![cfg_attr(all(test, not(target_os = "linux")), allow(dead_code))]
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use tls_probe_common::{RawTlsCapture, TLS_HANDSHAKE_CLIENT_HELLO, TLS_HANDSHAKE_SERVER_HELLO};
 use tls_probe_parser::{parse_tls_payload, TlsAnalysis as ParsedAnalysis};
 
-#[derive(Debug, Clone, Serialize)]
-pub struct TlsAnalysis {
+/// One JSONL event emitted by `tls-probe capture`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(
+    title = "TLS Capture Event",
+    description = "One JSONL line from tls-probe capture output"
+)]
+pub struct CaptureEvent {
     pub timestamp: String,
+    #[schemars(description = "Monotonic ktime from bpf_ktime_get_ns()")]
+    pub timestamp_ns: u64,
+    #[schemars(description = "Source address:port")]
     pub src: String,
+    #[schemars(description = "Destination address:port")]
     pub dst: String,
     pub tls_version: String,
     pub handshake_type: &'static str,
@@ -16,32 +26,34 @@ pub struct TlsAnalysis {
     pub signature_algorithms: Vec<SignatureAlgorithmInfo>,
     pub key_share_group: Option<KeyExchangeInfo>,
     pub sni: Option<String>,
-    pub pqc_ready: bool,
-    pub pqc_groups: Vec<&'static str>,
     pub process_name: Option<String>,
     pub pid: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CipherSuiteInfo {
     pub id: u16,
     pub name: &'static str,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct KeyExchangeInfo {
     pub id: u16,
     pub name: &'static str,
-    pub is_pqc: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SignatureAlgorithmInfo {
     pub id: u16,
     pub name: &'static str,
 }
 
-pub fn analyze_capture(capture: &RawTlsCapture) -> TlsAnalysis {
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn generate_schema() -> schemars::schema::RootSchema {
+    schemars::schema_for!(CaptureEvent)
+}
+
+pub fn analyze_capture(capture: &RawTlsCapture) -> CaptureEvent {
     let payload = capture.payload_slice();
     let is_client = capture.is_client_hello();
 
@@ -53,7 +65,7 @@ pub fn analyze_capture(capture: &RawTlsCapture) -> TlsAnalysis {
     }
 }
 
-fn build_analysis(capture: &RawTlsCapture, parsed: &ParsedAnalysis) -> TlsAnalysis {
+fn build_analysis(capture: &RawTlsCapture, parsed: &ParsedAnalysis) -> CaptureEvent {
     let cipher_suites: Vec<CipherSuiteInfo> = parsed
         .cipher_suites()
         .iter()
@@ -69,7 +81,6 @@ fn build_analysis(capture: &RawTlsCapture, parsed: &ParsedAnalysis) -> TlsAnalys
         .map(|&id| KeyExchangeInfo {
             id,
             name: key_exchange_name(id),
-            is_pqc: is_pqc_key_exchange(id),
         })
         .collect();
 
@@ -87,32 +98,23 @@ fn build_analysis(capture: &RawTlsCapture, parsed: &ParsedAnalysis) -> TlsAnalys
             hello.key_share_groups.first().map(|&id| KeyExchangeInfo {
                 id,
                 name: key_exchange_name(id),
-                is_pqc: is_pqc_key_exchange(id),
             })
         }
         ParsedAnalysis::ServerHello { hello, .. } => {
             hello.key_share_group.map(|id| KeyExchangeInfo {
                 id,
                 name: key_exchange_name(id),
-                is_pqc: is_pqc_key_exchange(id),
             })
         }
     };
-
-    let pqc_groups: Vec<&'static str> = key_exchange_groups
-        .iter()
-        .filter(|g| g.is_pqc)
-        .map(|g| g.name)
-        .collect();
-
-    let pqc_ready = !pqc_groups.is_empty() || key_share_group.as_ref().is_some_and(|g| g.is_pqc);
 
     let version = parsed.effective_version();
     let tls_version = tls_version_str(version);
     let (process_name, pid) = process_attribution(capture);
 
-    TlsAnalysis {
+    CaptureEvent {
         timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp_ns: capture.timestamp_ns,
         src: format!("{}:{}", capture.src_addr_str(), capture.src_port),
         dst: format!("{}:{}", capture.dst_addr_str(), capture.dst_port),
         tls_version: tls_version.to_string(),
@@ -122,18 +124,17 @@ fn build_analysis(capture: &RawTlsCapture, parsed: &ParsedAnalysis) -> TlsAnalys
         signature_algorithms,
         key_share_group,
         sni: parsed.sni().map(String::from),
-        pqc_ready,
-        pqc_groups,
         process_name,
         pid,
     }
 }
 
-fn build_fallback_analysis(capture: &RawTlsCapture) -> TlsAnalysis {
+fn build_fallback_analysis(capture: &RawTlsCapture) -> CaptureEvent {
     let (process_name, pid) = process_attribution(capture);
 
-    TlsAnalysis {
+    CaptureEvent {
         timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp_ns: capture.timestamp_ns,
         src: format!("{}:{}", capture.src_addr_str(), capture.src_port),
         dst: format!("{}:{}", capture.dst_addr_str(), capture.dst_port),
         tls_version: tls_version_str(capture.record_version).to_string(),
@@ -143,8 +144,6 @@ fn build_fallback_analysis(capture: &RawTlsCapture) -> TlsAnalysis {
         signature_algorithms: Vec::new(),
         key_share_group: None,
         sni: None,
-        pqc_ready: false,
-        pqc_groups: Vec::new(),
         process_name,
         pid,
     }
@@ -184,25 +183,6 @@ fn is_grease(value: u16) -> bool {
     let hi = (value >> 8) as u8;
     let lo = (value & 0xFF) as u8;
     hi == lo && (hi & 0x0F) == 0x0A
-}
-
-fn is_pqc_key_exchange(id: u16) -> bool {
-    matches!(
-        id,
-        // Standalone ML-KEM (NIST FIPS 203, draft-connolly-tls-mlkem-key-agreement-05)
-        0x0200    // MLKEM512
-        | 0x0201  // MLKEM768
-        | 0x0202  // MLKEM1024
-        // Hybrid ML-KEM (RFC-ietf-tls-ecdhe-mlkem-05)
-        | 0x11E9  // SecP256r1MLKEM512
-        | 0x11EA  // MLKEM512X25519
-        | 0x11EB  // SecP256r1MLKEM768
-        | 0x11EC  // X25519MLKEM768
-        | 0x11ED  // SecP384r1MLKEM1024
-        // Obsoleted pre-standard Kyber (RFC-ietf-tls-ecdhe-mlkem-05 §8)
-        | 0x6399  // X25519Kyber768Draft00
-        | 0x639A // SecP256r1Kyber768Draft00
-    )
 }
 
 fn key_exchange_name(id: u16) -> &'static str {
@@ -378,33 +358,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pqc_key_exchange_detection() {
-        // Standalone ML-KEM
-        assert!(is_pqc_key_exchange(0x0200));
-        assert!(is_pqc_key_exchange(0x0201));
-        assert!(is_pqc_key_exchange(0x0202));
-        // IANA final hybrid ML-KEM
-        assert!(is_pqc_key_exchange(0x11E9));
-        assert!(is_pqc_key_exchange(0x11EA));
-        assert!(is_pqc_key_exchange(0x11EB));
-        assert!(is_pqc_key_exchange(0x11EC));
-        assert!(is_pqc_key_exchange(0x11ED));
-        // Obsoleted pre-standard Kyber
-        assert!(is_pqc_key_exchange(0x6399));
-        assert!(is_pqc_key_exchange(0x639A));
-
-        assert!(!is_pqc_key_exchange(0x001D));
-        assert!(!is_pqc_key_exchange(0x0017));
-        assert!(!is_pqc_key_exchange(0x0018));
-        assert!(!is_pqc_key_exchange(0x0000));
-        assert!(!is_pqc_key_exchange(0xFFFF));
-        // Unassigned values that were previously bogus entries
-        assert!(!is_pqc_key_exchange(0x2F00));
-        assert!(!is_pqc_key_exchange(0x2F01));
-        assert!(!is_pqc_key_exchange(0x4588));
-    }
-
-    #[test]
     fn cipher_suite_lookup_known() {
         assert_eq!(cipher_suite_name(0x1301), "TLS_AES_128_GCM_SHA256");
         assert_eq!(cipher_suite_name(0x1302), "TLS_AES_256_GCM_SHA384");
@@ -480,5 +433,58 @@ mod tests {
             handshake_type_name(TLS_HANDSHAKE_SERVER_HELLO),
             "ServerHello"
         );
+    }
+
+    #[test]
+    fn fixture_event_serializes_to_schema_shape() {
+        let capture = RawTlsCapture::default();
+        let event = analyze_capture(&capture);
+        let json = serde_json::to_string(&event).expect("serialize capture event");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse serialized json");
+
+        assert!(value.get("timestamp").is_some());
+        assert!(value.get("timestamp_ns").is_some());
+        assert!(value.get("src").is_some());
+        assert!(value.get("dst").is_some());
+        assert!(value.get("tls_version").is_some());
+        assert!(value.get("handshake_type").is_some());
+        assert!(value.get("cipher_suites").is_some());
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn schema_matches_committed() {
+        let generated = generate_schema();
+        let generated_json = serde_json::to_string_pretty(&generated).expect("serialize schema");
+
+        let committed = include_str!("../../../specs/capture-event.schema.json");
+
+        assert_eq!(
+            generated_json.trim(),
+            committed.trim(),
+            "Schema drift detected! Regenerate with: cargo test -p tls-probe -- --ignored generate_schema_file"
+        );
+    }
+
+    #[test]
+    #[ignore = "Run manually to regenerate: cargo test -p tls-probe -- --ignored generate_schema_file"]
+    fn generate_schema_file() {
+        let schema = generate_schema();
+        let json = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&schema).expect("serialize schema")
+        );
+        let schema_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/capture-event.schema.json");
+        if let Some(parent) = schema_path.parent() {
+            std::fs::create_dir_all(parent).expect("create specs directory");
+        }
+        std::fs::write(&schema_path, json).expect("write schema file");
+        eprintln!("Schema written to {}", schema_path.display());
     }
 }

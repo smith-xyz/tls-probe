@@ -22,8 +22,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
+schemars = { version = "0.8", features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aya = { workspace = true, features = ["async_tokio"] }
+aya = { workspace = true }
 caps = "0.5"
 libc = "0.2"
