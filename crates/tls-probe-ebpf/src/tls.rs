@@ -233,10 +233,14 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
     scratch.event.payload_len = 0;
 
     // Exact-length copy (no bucket rounding, which truncated e.g. 300→256 and
-    // could clip SNI). Redundant-looking bounds give the verifier the explicit
-    // [1, RAW_PAYLOAD_SIZE] range bpf_skb_load_bytes requires for a
-    // register-sized length.
-    let mut copy_len = payload_avail;
+    // could clip SNI). bpf_skb_load_bytes requires a register-sized length the
+    // verifier can prove is in [1, RAW_PAYLOAD_SIZE]. LLVM proves
+    // payload_avail >= 6 from the record-header bounds check above and deletes
+    // a plain `>= 1` guard, but the verifier cannot re-derive that relation
+    // across saturating_sub and rejects the call with "invalid zero-sized
+    // read". black_box hides the value's provenance so both bounds checks
+    // survive into the emitted bytecode.
+    let mut copy_len = core::hint::black_box(payload_avail);
     if copy_len > RAW_PAYLOAD_SIZE {
         copy_len = RAW_PAYLOAD_SIZE;
     }
