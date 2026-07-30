@@ -202,7 +202,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: smoke-test-${{ steps.arch.outputs.arch }}
-          path: smoke/run/
+          # The test cert/key are minted by root with 0600 perms (EACCES for
+          # the runner user) and a private key has no business in an artifact.
+          path: |
+            smoke/run/
+            !smoke/run/*.pem
           if-no-files-found: warn
 
   container:
