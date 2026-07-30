@@ -41,6 +41,21 @@ unsafe fn load_bytes_fixed<const N: u32>(ctx: &TcContext, offset: usize, dst: *m
     bpf_skb_load_bytes(ctx.skb.skb as *const _, offset as u32, dst as *mut _, N) >= 0
 }
 
+// Helper read, not direct packet access: reaches paged (GSO) data and keeps
+// dynamic offsets out of the verifier's packet-range analysis. Use for any
+// offset that is not a compile-time constant.
+#[inline(always)]
+unsafe fn load_u8(ctx: &TcContext, offset: usize) -> Option<u8> {
+    let mut b = 0u8;
+    if load_bytes_fixed::<1>(ctx, offset, &mut b as *mut u8) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+// Direct packet access is only verifier-safe at constant nonzero offsets;
+// see load_u8 for dynamic offsets.
 #[inline(always)]
 unsafe fn ptr_at<T>(ctx: &TcContext, offset: usize) -> Option<*const T> {
     let data = ctx.data();
@@ -113,7 +128,7 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
     if tcp_start + 13 > pkt_len {
         return Ok(());
     }
-    let tcp_off_byte = match unsafe { read_u8(ctx, tcp_start + 12) } {
+    let tcp_off_byte = match unsafe { load_u8(ctx, tcp_start + 12) } {
         Some(v) => v,
         None => return Ok(()),
     };
@@ -128,26 +143,22 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
         return Ok(());
     }
 
-    let content_type = match unsafe { read_u8(ctx, tls_start) } {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    if content_type != TLS_CONTENT_HANDSHAKE {
+    // Record header + handshake type in one helper call.
+    let mut rec = [0u8; TLS_RECORD_HDR_LEN + 1];
+    if !unsafe { load_bytes_fixed::<6>(ctx, tls_start, rec.as_mut_ptr()) } {
         return Ok(());
     }
 
-    let record_version = match unsafe { read_u16_be(ctx, tls_start + 1) } {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    if record_version < 0x0300 || record_version > 0x0303 {
+    if rec[0] != TLS_CONTENT_HANDSHAKE {
         return Ok(());
     }
 
-    let hs_type = match unsafe { read_u8(ctx, tls_start + 5) } {
-        Some(v) => v,
-        None => return Ok(()),
-    };
+    let record_version = u16::from_be_bytes([rec[1], rec[2]]);
+    if !(0x0300..=0x0303).contains(&record_version) {
+        return Ok(());
+    }
+
+    let hs_type = rec[5];
     if hs_type != TLS_HANDSHAKE_CLIENT_HELLO && hs_type != TLS_HANDSHAKE_SERVER_HELLO {
         return Ok(());
     }
@@ -205,16 +216,12 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
     if tcp_start + 4 > pkt_len {
         return Ok(());
     }
-    let src_port = match unsafe { read_u16_be(ctx, tcp_start) } {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    let dst_port = match unsafe { read_u16_be(ctx, tcp_start + 2) } {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    scratch.event.src_port = src_port;
-    scratch.event.dst_port = dst_port;
+    let mut ports = [0u8; 4];
+    if !unsafe { load_bytes_fixed::<4>(ctx, tcp_start, ports.as_mut_ptr()) } {
+        return Ok(());
+    }
+    scratch.event.src_port = u16::from_be_bytes([ports[0], ports[1]]);
+    scratch.event.dst_port = u16::from_be_bytes([ports[2], ports[3]]);
 
     if !is_egress {
         let tmp = scratch.event.src_port;
@@ -225,30 +232,25 @@ fn try_capture_tls(ctx: &TcContext, is_egress: bool) -> Result<(), ()> {
     let payload_avail = pkt_len.saturating_sub(tls_start);
     scratch.event.payload_len = 0;
 
-    if payload_avail >= 1400 {
-        if unsafe { load_bytes_fixed::<1400>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
-            scratch.event.payload_len = 1400;
+    // Exact-length copy (no bucket rounding, which truncated e.g. 300→256 and
+    // could clip SNI). Redundant-looking bounds give the verifier the explicit
+    // [1, RAW_PAYLOAD_SIZE] range bpf_skb_load_bytes requires for a
+    // register-sized length.
+    let mut copy_len = payload_avail;
+    if copy_len > RAW_PAYLOAD_SIZE {
+        copy_len = RAW_PAYLOAD_SIZE;
+    }
+    if copy_len >= 1
+        && unsafe {
+            bpf_skb_load_bytes(
+                ctx.skb.skb as *const _,
+                tls_start as u32,
+                scratch.event.payload.as_mut_ptr() as *mut _,
+                copy_len as u32,
+            ) >= 0
         }
-    } else if payload_avail >= 1024 {
-        if unsafe { load_bytes_fixed::<1024>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
-            scratch.event.payload_len = 1024;
-        }
-    } else if payload_avail >= 512 {
-        if unsafe { load_bytes_fixed::<512>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
-            scratch.event.payload_len = 512;
-        }
-    } else if payload_avail >= 256 {
-        if unsafe { load_bytes_fixed::<256>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
-            scratch.event.payload_len = 256;
-        }
-    } else if payload_avail >= 128 {
-        if unsafe { load_bytes_fixed::<128>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
-            scratch.event.payload_len = 128;
-        }
-    } else if payload_avail >= 64 {
-        if unsafe { load_bytes_fixed::<64>(ctx, tls_start, scratch.event.payload.as_mut_ptr()) } {
-            scratch.event.payload_len = 64;
-        }
+    {
+        scratch.event.payload_len = copy_len as u16;
     }
 
     scratch.event.pid = 0;

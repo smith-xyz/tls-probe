@@ -108,7 +108,9 @@ class Check:
         try:
             passed, detail = self.predicate(observation)
         except Exception as exc:  # a check must never mask itself as a pass
-            return CheckResult(self.name, False, self.severity, f"check raised: {exc!r}")
+            return CheckResult(
+                self.name, False, self.severity, f"check raised: {exc!r}"
+            )
         return CheckResult(self.name, passed, self.severity, detail)
 
 
@@ -230,9 +232,18 @@ def write_step_summary(results: Sequence[ScenarioResult]) -> None:
         heading = f"### {icon.get(result.status, '')} `{result.name}` — {result.status}"
         lines += [heading + (f" ({result.reason})" if result.reason else ""), ""]
         if result.checks:
-            lines += [f"{result.event_count} events captured.", "", "| | Check | Detail |", "|---|---|---|"]
+            lines += [
+                f"{result.event_count} events captured.",
+                "",
+                "| | Check | Detail |",
+                "|---|---|---|",
+            ]
             for check in result.checks:
-                mark = "✅" if check.passed else ("❌" if check.severity == Severity.ERROR else "⚠️")
+                mark = (
+                    "✅"
+                    if check.passed
+                    else ("❌" if check.severity == Severity.ERROR else "⚠️")
+                )
                 detail = check.detail.replace("|", "\\|")
                 lines.append(f"| {mark} | `{check.name}` | {detail} |")
             lines.append("")
@@ -278,7 +289,9 @@ def _type_ok(instance: object, expected: str) -> bool:
     return isinstance(instance, python_type) and not isinstance(instance, bool)
 
 
-def _validate(instance, schema: dict, root: dict, path: str, errors: "list[str]") -> None:
+def _validate(
+    instance, schema: dict, root: dict, path: str, errors: "list[str]"
+) -> None:
     """Minimal draft-07 subset covering the committed capture-event schema.
 
     Only used when the `jsonschema` package is unavailable, so the smoke test
@@ -317,7 +330,11 @@ def _validate(instance, schema: dict, root: dict, path: str, errors: "list[str]"
             _validate(item, schema["items"], root, f"{path}[{index}]", errors)
 
     minimum = schema.get("minimum")
-    if minimum is not None and isinstance(instance, (int, float)) and not isinstance(instance, bool):
+    if (
+        minimum is not None
+        and isinstance(instance, (int, float))
+        and not isinstance(instance, bool)
+    ):
         if instance < minimum:
             errors.append(f"{path or '<root>'}: {instance} < minimum {minimum}")
 
@@ -362,7 +379,11 @@ def preflight(probe: Path, ebpf: Path, schema: Path) -> None:
             f"{MIN_KERNEL[0]}.{MIN_KERNEL[1]} (BPF ringbuf required)"
         )
 
-    for label, path in (("probe binary", probe), ("eBPF object", ebpf), ("schema", schema)):
+    for label, path in (
+        ("probe binary", probe),
+        ("eBPF object", ebpf),
+        ("schema", schema),
+    ):
         if not path.is_file():
             problems.append(f"{label} not found: {path}")
     if probe.is_file() and not os.access(probe, os.X_OK):
@@ -392,7 +413,9 @@ def preflight(probe: Path, ebpf: Path, schema: Path) -> None:
 class Probe:
     """Runs `tls-probe capture` and stops it deterministically with SIGTERM."""
 
-    def __init__(self, binary: Path, ebpf: Path, interface: str, workdir: Path, name: str):
+    def __init__(
+        self, binary: Path, ebpf: Path, interface: str, workdir: Path, name: str
+    ):
         self.binary = binary
         self.ebpf = ebpf
         self.interface = interface
@@ -407,13 +430,18 @@ class Probe:
     def argv(self) -> "list[str]":
         return [
             str(self.binary),
-            "--log-level", "info",
+            "--log-level",
+            "info",
             "capture",
-            "--interface", self.interface,
-            "--ebpf", str(self.ebpf),
-            "--output", str(self.output),
+            "--interface",
+            self.interface,
+            "--ebpf",
+            str(self.ebpf),
+            "--output",
+            str(self.output),
             # Backstop only; stop() drives the actual shutdown via SIGTERM.
-            "--duration", str(PROBE_MAX_DURATION_S),
+            "--duration",
+            str(PROBE_MAX_DURATION_S),
         ]
 
     def read_log(self) -> str:
@@ -449,7 +477,9 @@ class Probe:
                     f"probe exited with code {exit_code} before attaching:\n{self.read_log()}"
                 )
             time.sleep(0.1)
-        raise SmokeFailure(f"probe did not attach within {READY_TIMEOUT_S:.0f}s:\n{self.read_log()}")
+        raise SmokeFailure(
+            f"probe did not attach within {READY_TIMEOUT_S:.0f}s:\n{self.read_log()}"
+        )
 
     def stop(self) -> None:
         """SIGTERM for a graceful flush, SIGKILL the group if it will not go."""
@@ -499,7 +529,9 @@ class Probe:
                 try:
                     events.append(json.loads(line))
                 except json.JSONDecodeError as exc:
-                    raise SmokeFailure(f"{self.output}:{number}: malformed JSONL: {exc}") from exc
+                    raise SmokeFailure(
+                        f"{self.output}:{number}: malformed JSONL: {exc}"
+                    ) from exc
         return events
 
     def read_counters(self) -> Counters:
@@ -507,7 +539,9 @@ class Probe:
         if not matches:
             return Counters()
         emitted, dropped, kernel_lost, evicted = matches[-1]
-        return Counters(int(emitted), int(dropped), int(kernel_lost), int(evicted), found=True)
+        return Counters(
+            int(emitted), int(dropped), int(kernel_lost), int(evicted), found=True
+        )
 
 
 # --- Traffic generators -------------------------------------------------------
@@ -519,16 +553,29 @@ def mint_certificate(workdir: Path) -> "tuple[Path, Path]":
         return cert, key
     result = subprocess.run(
         [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256",
-            "-days", "1", "-nodes",
-            "-keyout", str(key), "-out", str(cert),
-            "-subj", f"/CN={SMOKE_SNI}",
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-days",
+            "1",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-subj",
+            f"/CN={SMOKE_SNI}",
         ],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        raise SmokeFailure(f"openssl failed to mint the test certificate: {result.stderr.strip()}")
+        raise SmokeFailure(
+            f"openssl failed to mint the test certificate: {result.stderr.strip()}"
+        )
     return cert, key
 
 
@@ -602,12 +649,16 @@ def loopback_traffic(workdir: Path) -> TrafficReport:
 
         for attempt in range(attempts):
             try:
-                with socket.create_connection(("127.0.0.1", server.port), timeout=5) as raw:
+                with socket.create_connection(
+                    ("127.0.0.1", server.port), timeout=5
+                ) as raw:
                     # server_hostname drives the SNI extension even with verification off.
                     with context.wrap_socket(raw, server_hostname=SMOKE_SNI) as tls:
                         version = tls.version()
                         if version is None:
-                            raise SmokeFailure("handshake completed without negotiating a version")
+                            raise SmokeFailure(
+                                "handshake completed without negotiating a version"
+                            )
                         tls.sendall(b"ping")
                         tls.recv(16)
                         if attempt == 0:
@@ -642,7 +693,9 @@ def egress_traffic(_workdir: Path) -> TrafficReport:
 
     for host in EGRESS_HOSTS:
         try:
-            with socket.create_connection((host, 443), timeout=EGRESS_CONNECT_TIMEOUT_S) as raw:
+            with socket.create_connection(
+                (host, 443), timeout=EGRESS_CONNECT_TIMEOUT_S
+            ) as raw:
                 with context.wrap_socket(raw, server_hostname=host) as tls:
                     notes.append(f"{host}: {tls.version()}")
             reached.append(host)
@@ -684,7 +737,10 @@ def check_client_hello(observation: Observation) -> "tuple[bool, str]":
 
 def check_server_hello(observation: Observation) -> "tuple[bool, str]":
     count = len(observation.server_hellos)
-    return count > 0, f"{count} ServerHello events (exercises ingress and the src/dst swap)"
+    return (
+        count > 0,
+        f"{count} ServerHello events (exercises ingress and the src/dst swap)",
+    )
 
 
 def check_expected_sni(observation: Observation) -> "tuple[bool, str]":
@@ -692,7 +748,9 @@ def check_expected_sni(observation: Observation) -> "tuple[bool, str]":
     if not expected:
         return True, "no SNI expectation for this scenario"
     seen = observation.snis
-    return bool(expected & seen), f"expected any of {sorted(expected)}, captured {sorted(seen)}"
+    return bool(
+        expected & seen
+    ), f"expected any of {sorted(expected)}, captured {sorted(seen)}"
 
 
 def check_expected_endpoint(observation: Observation) -> "tuple[bool, str]":
@@ -700,7 +758,40 @@ def check_expected_endpoint(observation: Observation) -> "tuple[bool, str]":
     if not expected:
         return True, "no endpoint expectation for this scenario"
     seen = observation.endpoints
-    return bool(expected & seen), f"expected any of {sorted(expected)} in src/dst, captured {sorted(seen)}"
+    return bool(
+        expected & seen
+    ), f"expected any of {sorted(expected)} in src/dst, captured {sorted(seen)}"
+
+
+def _at_expected_endpoint(
+    observation: Observation, events: Sequence[dict]
+) -> "list[dict]":
+    """Only events touching our own fixture, so unrelated TLS on the interface cannot flake a gate."""
+    expected = set(observation.traffic.expected_endpoints)
+    return [e for e in events if e.get("src") in expected or e.get("dst") in expected]
+
+
+def check_capture_complete(observation: Observation) -> "tuple[bool, str]":
+    """Per-handshake accounting: capturing *some* events must not hide losing others."""
+    expected = observation.traffic.succeeded
+    client = _at_expected_endpoint(observation, observation.client_hellos)
+    server = _at_expected_endpoint(observation, observation.server_hellos)
+    return len(client) >= expected and len(server) >= expected, (
+        f"{len(client)} ClientHellos / {len(server)} ServerHellos at the pinned endpoint for "
+        f"{expected} handshakes; fewer means silent capture loss (non-linear skb, verifier bail-out)"
+    )
+
+
+def check_sni_on_every_client_hello(observation: Observation) -> "tuple[bool, str]":
+    """SNI sits late in the record, so a truncated payload copy clips it first."""
+    client = _at_expected_endpoint(observation, observation.client_hellos)
+    if not client:
+        return False, "no ClientHellos at the pinned endpoint to inspect"
+    missing = sum(1 for e in client if not e.get("sni"))
+    return missing == 0, (
+        f"{missing}/{len(client)} pinned-endpoint ClientHellos lack an SNI; "
+        "a truncated payload copy is the usual cause"
+    )
 
 
 def _non_empty(events: Sequence[dict], key: str) -> int:
@@ -745,7 +836,10 @@ def check_tls_versions_known(observation: Observation) -> "tuple[bool, str]":
             if event.get("tls_version") not in KNOWN_TLS_VERSIONS
         }
     )
-    return not unknown, f"unrecognised tls_version values: {unknown}" if unknown else "all recognised"
+    return (
+        not unknown,
+        f"unrecognised tls_version values: {unknown}" if unknown else "all recognised",
+    )
 
 
 def check_named_ids_resolved(observation: Observation) -> "tuple[bool, str]":
@@ -756,7 +850,10 @@ def check_named_ids_resolved(observation: Observation) -> "tuple[bool, str]":
             for item in event.get(key) or []:
                 if item.get("name") == "unknown":
                     unknown.add(f"{key}:0x{item.get('id', 0):04x}")
-    return not unknown, f"unmapped ids: {sorted(unknown)}" if unknown else "all ids mapped to names"
+    return (
+        not unknown,
+        f"unmapped ids: {sorted(unknown)}" if unknown else "all ids mapped to names",
+    )
 
 
 def check_process_attribution(observation: Observation) -> "tuple[bool, str]":
@@ -791,7 +888,10 @@ def check_traffic_complete(observation: Observation) -> "tuple[bool, str]":
     """A flaky fixture would otherwise be indistinguishable from a probe bug."""
     traffic = observation.traffic
     notes = "; ".join(traffic.notes) or "no notes"
-    return traffic.succeeded == traffic.attempted, f"{traffic.succeeded}/{traffic.attempted} handshakes: {notes}"
+    return (
+        traffic.succeeded == traffic.attempted,
+        f"{traffic.succeeded}/{traffic.attempted} handshakes: {notes}",
+    )
 
 
 def check_probe_exit(observation: Observation) -> "tuple[bool, str]":
@@ -805,8 +905,15 @@ def check_probe_exit(observation: Observation) -> "tuple[bool, str]":
 
 
 def check_no_probe_errors(observation: Observation) -> "tuple[bool, str]":
-    offenders = [line.strip() for line in observation.probe_log.splitlines() if PROBE_ERROR_RE.search(line)]
-    return not offenders, f"probe logged errors: {offenders[:3]}" if offenders else "no errors logged"
+    offenders = [
+        line.strip()
+        for line in observation.probe_log.splitlines()
+        if PROBE_ERROR_RE.search(line)
+    ]
+    return (
+        not offenders,
+        f"probe logged errors: {offenders[:3]}" if offenders else "no errors logged",
+    )
 
 
 #: Assertions that must hold wherever the probe runs.
@@ -817,7 +924,9 @@ BASE_CHECKS: "tuple[Check, ...]" = (
     Check("expected_sni_captured", Severity.ERROR, check_expected_sni),
     Check("cipher_suites_parsed", Severity.ERROR, check_cipher_suites_parsed),
     Check("key_exchange_groups_parsed", Severity.ERROR, check_key_exchange_parsed),
-    Check("signature_algorithms_parsed", Severity.ERROR, check_signature_algorithms_parsed),
+    Check(
+        "signature_algorithms_parsed", Severity.ERROR, check_signature_algorithms_parsed
+    ),
     Check("emitted_matches_output", Severity.ERROR, check_emitted_matches_output),
     Check("probe_exited_cleanly", Severity.ERROR, check_probe_exit),
     Check("no_probe_errors", Severity.ERROR, check_no_probe_errors),
@@ -834,7 +943,15 @@ SCENARIOS: "tuple[Scenario, ...]" = (
         + (
             # We own both peers here, so everything is deterministic and hard-gated.
             Check("server_hello_captured", Severity.ERROR, check_server_hello),
-            Check("expected_endpoint_captured", Severity.ERROR, check_expected_endpoint),
+            Check(
+                "expected_endpoint_captured", Severity.ERROR, check_expected_endpoint
+            ),
+            Check("capture_complete", Severity.ERROR, check_capture_complete),
+            Check(
+                "sni_on_every_client_hello",
+                Severity.ERROR,
+                check_sni_on_every_client_hello,
+            ),
             Check("key_share_parsed", Severity.ERROR, check_key_share_parsed),
             Check("tls_versions_known", Severity.ERROR, check_tls_versions_known),
             Check("no_event_drops", Severity.ERROR, check_no_drops),
@@ -896,10 +1013,16 @@ def run_scenario(
 
         results = [check.run(observation) for check in scenario.checks]
         for result in results:
-            mark = "PASS" if result.passed else ("FAIL" if result.severity == Severity.ERROR else "WARN")
+            mark = (
+                "PASS"
+                if result.passed
+                else ("FAIL" if result.severity == Severity.ERROR else "WARN")
+            )
             log(f"  [{mark}] {result.name}: {result.detail}")
             if not result.passed:
-                annotate(result.severity, f"{scenario.name}/{result.name}: {result.detail}")
+                annotate(
+                    result.severity, f"{scenario.name}/{result.name}: {result.detail}"
+                )
 
         status = "failed" if any(r.fatal for r in results) else "passed"
         return ScenarioResult(scenario.name, status, "", results, len(events))
@@ -910,8 +1033,12 @@ def parse_args(argv: "Optional[Sequence[str]]" = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--probe", type=Path, required=True, help="path to the tls-probe binary")
-    parser.add_argument("--ebpf", type=Path, required=True, help="path to the compiled eBPF object")
+    parser.add_argument(
+        "--probe", type=Path, required=True, help="path to the tls-probe binary"
+    )
+    parser.add_argument(
+        "--ebpf", type=Path, required=True, help="path to the compiled eBPF object"
+    )
     parser.add_argument(
         "--schema",
         type=Path,
@@ -935,7 +1062,11 @@ def parse_args(argv: "Optional[Sequence[str]]" = None) -> argparse.Namespace:
 
 def main(argv: "Optional[Sequence[str]]" = None) -> int:
     args = parse_args(argv)
-    probe_bin, ebpf, schema_path = args.probe.resolve(), args.ebpf.resolve(), args.schema.resolve()
+    probe_bin, ebpf, schema_path = (
+        args.probe.resolve(),
+        args.ebpf.resolve(),
+        args.schema.resolve(),
+    )
     workdir = args.workdir
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -952,10 +1083,13 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
 
     with group("Summary"):
         for result in results:
-            warnings = sum(1 for c in result.checks if not c.passed and c.severity == Severity.WARN)
+            warnings = sum(
+                1 for c in result.checks if not c.passed and c.severity == Severity.WARN
+            )
             log(
                 f"  {result.name:10s} {result.status:8s} events={result.event_count} "
-                f"warnings={warnings}" + (f"  ({result.reason})" if result.reason else "")
+                f"warnings={warnings}"
+                + (f"  ({result.reason})" if result.reason else "")
             )
 
     report_path = workdir / "report.json"
@@ -968,7 +1102,9 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
     required = {s.name for s in selected if s.required}
     failed = [r for r in results if r.status == "failed" and r.name in required]
     if failed:
-        annotate(Severity.ERROR, f"smoke test failed: {', '.join(r.name for r in failed)}")
+        annotate(
+            Severity.ERROR, f"smoke test failed: {', '.join(r.name for r in failed)}"
+        )
         return 1
     log("\nsmoke test passed")
     return 0
