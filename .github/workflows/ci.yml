@@ -17,27 +17,76 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # RHCOS 4.x ships glibc 2.34 — binaries must not exceed this
+  # Target environment pins glibc 2.34 — binaries must not exceed this
   GLIBC_MAX: "2.34"
 
 jobs:
-  # Gate: cheap checks first. Later jobs need this so a failure skips builds/push.
-  test:
-    name: Test
+  # Reused (via `container:`) by jobs below that don't produce the shipped
+  # release binary: pre-installs Rust nightly + bpf-linker, and carries
+  # OpenSSL 3.5+ so the smoke test's netns_pqc (X25519MLKEM768) scenario
+  # actually runs instead of silently skipping (Ubuntu 22.04/24.04 both
+  # stop at OpenSSL 3.0.x). Tag is a hash of the Containerfile, so this
+  # only actually builds/pushes when that file changes — otherwise it's
+  # just a manifest check and every other job reuses the existing image.
+  # Deliberately NOT used by build-cli: that job produces the actual
+  # shipped binary gated by GLIBC_MAX below, and stays on the bare,
+  # single-purpose ubuntu-22.04 runner so this convenience image can
+  # evolve for local dev without touching that gate.
+  # See contrib/dev/Containerfile / docs/dev-container.md.
+  dev-image:
+    name: Build dev/test image
     runs-on: ubuntu-22.04
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: Resolve image tag
+        # Content-addressed: same Containerfile -> same tag, so unrelated
+        # commits reuse the existing image instead of rebuilding/pushing
+        # a new tag every run.
+        id: resolve
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm libelf-dev
+          echo "image=ghcr.io/smith-xyz/tls-probe-dev:${{ hashFiles('contrib/dev/Containerfile') }}" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust nightly + bpf-linker
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for existing image
+        id: check
         run: |
-          rustup install nightly
-          rustup component add rust-src --toolchain nightly
-          cargo +nightly install bpf-linker
+          if docker manifest inspect "${{ steps.resolve.outputs.image }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push dev/test image
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: contrib/dev/Containerfile
+          push: true
+          tags: ${{ steps.resolve.outputs.image }}
+
+  # Gate: cheap checks first. Later jobs need this so a failure skips builds/push.
+  test:
+    name: Test
+    needs: dev-image
+    runs-on: ubuntu-22.04
+    container:
+      image: ${{ needs.dev-image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Build eBPF (needed by workspace resolution)
         run: cargo xtask build-ebpf --profile release
@@ -53,8 +102,10 @@ jobs:
 
   build-ebpf:
     name: Build eBPF (${{ matrix.bpf-arch }})
-    needs: test
+    needs: [test, dev-image]
     runs-on: ubuntu-22.04
+    container:
+      image: ${{ needs.dev-image.outputs.image }}
     strategy:
       fail-fast: true
       matrix:
@@ -65,17 +116,6 @@ jobs:
             artifact-suffix: arm64
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm libelf-dev
-
-      - name: Install Rust nightly + bpf-linker
-        run: |
-          rustup install nightly
-          rustup component add rust-src --toolchain nightly
-          cargo +nightly install bpf-linker
 
       - name: Build eBPF program
         run: cargo xtask build-ebpf --profile release --target-arch ${{ matrix.bpf-arch }}
@@ -138,7 +178,7 @@ jobs:
             | grep -oP 'GLIBC_\K[0-9]+\.[0-9]+' | sort -Vu | tail -1)
           echo "Required: GLIBC_${REQUIRED}  Max allowed: GLIBC_${MAX}"
           if [ "$(printf '%s\n' "$MAX" "$REQUIRED" | sort -V | tail -1)" != "$MAX" ]; then
-            echo "::error::Binary requires GLIBC_${REQUIRED} but RHCOS only has GLIBC_${MAX}"
+            echo "::error::Binary requires GLIBC_${REQUIRED} but target hosts only have GLIBC_${MAX}"
             exit 1
           fi
 
@@ -154,10 +194,20 @@ jobs:
           path: tls-probe-linux-${{ matrix.arch }}
           if-no-files-found: error
 
+  # Runtime coverage is the runner kernel (6.x) only. The 5.8 kernel floor is
+  # deliberately NOT exercised here: 5.8 is EOL/non-LTS with no maintained
+  # prebuilt BPF test images, so a vmtest job would mean building a patched
+  # kernel per run or hosting a binary blob. Waiver + rationale + revisit
+  # triggers: docs/kernel-support.md.
   smoke-test:
     name: Smoke Test (eBPF runtime)
-    needs: build-cli
+    needs: [build-cli, dev-image]
     runs-on: ubuntu-22.04
+    container:
+      image: ${{ needs.dev-image.outputs.image }}
+      # eBPF attach needs real root/capabilities; the container job runs as
+      # root already (no `sudo` in this image), --privileged grants the rest.
+      options: --privileged
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -183,15 +233,10 @@ jobs:
           name: tls-probe-ebpf-${{ steps.arch.outputs.arch }}
           path: smoke/
 
-      # Installed as root because the smoke test runs under sudo. The script
-      # falls back to a builtin validator if this is unavailable.
-      - name: Install schema validator
-        run: sudo python3 -m pip install --quiet jsonschema
-
       - name: Run smoke test
         run: |
           chmod +x smoke/tls-probe-linux-${{ steps.arch.outputs.arch }}
-          sudo python3 scripts/smoke_test.py \
+          python3 scripts/smoke_test.py \
             --probe smoke/tls-probe-linux-${{ steps.arch.outputs.arch }} \
             --ebpf smoke/tls-probe-ebpf \
             --schema specs/capture-event.schema.json \
@@ -207,6 +252,115 @@ jobs:
           path: |
             smoke/run/
             !smoke/run/*.pem
+          if-no-files-found: warn
+
+  # New assertion (roadmap 3.3): does not gate the container image publish
+  # until it has proven itself stable on real runners.
+  container-attribution:
+    name: Container Attribution (cgroup runtime)
+    needs: build-cli
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Resolve runner architecture
+        id: arch
+        run: |
+          case "$(uname -m)" in
+            x86_64)  echo "arch=amd64" >> "$GITHUB_OUTPUT" ;;
+            aarch64) echo "arch=arm64" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::No tls-probe artifact for runner arch $(uname -m)"; exit 1 ;;
+          esac
+
+      - name: Download CLI binary
+        uses: actions/download-artifact@v4
+        with:
+          name: tls-probe-linux-${{ steps.arch.outputs.arch }}
+          path: attribution/
+
+      - name: Download eBPF object
+        uses: actions/download-artifact@v4
+        with:
+          name: tls-probe-ebpf-${{ steps.arch.outputs.arch }}
+          path: attribution/
+
+      - name: Start containerized workload
+        # curlimages/curl's entrypoint is curl itself, so `sleep` must replace
+        # the entrypoint to keep the container alive between exec calls.
+        run: |
+          docker run -d --name tls-workload --entrypoint sleep \
+            curlimages/curl:latest 300
+
+      - name: Capture workload TLS traffic from the host
+        run: |
+          chmod +x attribution/tls-probe-linux-${{ steps.arch.outputs.arch }}
+          sudo attribution/tls-probe-linux-${{ steps.arch.outputs.arch }} \
+            --log-level info capture \
+            --interface all \
+            --ebpf attribution/tls-probe-ebpf \
+            --output attribution/events.jsonl \
+            --duration 20 \
+            > attribution/probe.log 2>&1 &
+          PROBE_PID=$!
+          # Same readiness marker the smoke test polls for.
+          for _ in $(seq 45); do
+            grep -q "Probes attached:" attribution/probe.log && break
+            if ! ps -p "$PROBE_PID" > /dev/null; then
+              echo "::error::probe exited before attaching"
+              cat attribution/probe.log
+              exit 1
+            fi
+            sleep 1
+          done
+          if ! grep -q "Probes attached:" attribution/probe.log; then
+            echo "::error::probe did not attach in time"
+            cat attribution/probe.log
+            exit 1
+          fi
+          docker exec tls-workload curl -so /dev/null https://example.com
+          docker exec tls-workload curl -so /dev/null https://example.com
+          wait "$PROBE_PID"
+
+      - name: Assert container attribution
+        run: |
+          WORKLOAD_ID=$(docker inspect --format '{{.Id}}' tls-workload)
+          python3 - "$WORKLOAD_ID" <<'EOF'
+          import json
+          import sys
+
+          workload_id = sys.argv[1]
+          with open("attribution/events.jsonl") as fh:
+              lines = [line for line in fh.read().splitlines() if line.strip()]
+
+          attributed = [
+              event
+              for event in map(json.loads, lines)
+              if event.get("handshake_type") == "ClientHello"
+              and event.get("container_id")
+              and event.get("cgroup_id") is not None
+          ]
+          if not attributed:
+              print("::error::no ClientHello event carried container attribution")
+              print("--- first 20 captured events ---")
+              print("\n".join(lines[:20]))
+              sys.exit(1)
+
+          for event in attributed:
+              marker = (
+                  "workload match"
+                  if workload_id.startswith(event["container_id"])
+                  else "other container"
+              )
+              print(f"[{marker}] {json.dumps(event)}")
+          EOF
+
+      - name: Upload attribution artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-attribution-${{ steps.arch.outputs.arch }}
+          path: |
+            attribution/events.jsonl
+            attribution/probe.log
           if-no-files-found: warn
 
   container:

@@ -6,16 +6,21 @@ mod tls;
 
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::{LruHashMap, PerCpuArray, RingBuf};
-use tls_probe_common::{ConnInfo, ConnKey, RawTlsCapture};
+use tls_probe_common::{ConnInfo, ConnKey, RawTlsCapture, ReasmKey, ReasmState};
 
 #[map(name = "TLS_EVENTS")]
-static TLS_EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+static TLS_EVENTS: RingBuf = RingBuf::with_byte_size(512 * 1024, 0);
 
 /// Connections observed via the `tcp_v4_connect`/`tcp_v6_connect` kprobes,
 /// keyed by 4-tuple so the TC classifier can attribute a TLS handshake to
 /// the process that initiated the underlying TCP connection.
 #[map(name = "CONN_MAP")]
 static CONN_MAP: LruHashMap<ConnKey, ConnInfo> = LruHashMap::with_max_entries(8192, 0);
+
+/// Track in-flight TLS record reassembly: keyed by (flow 4-tuple, direction bit);
+/// limits to MAX_REASM_SEGMENTS segments per flow to prevent DoS.
+#[map(name = "REASM_MAP")]
+static REASM_MAP: LruHashMap<ReasmKey, ReasmState> = LruHashMap::with_max_entries(1024, 0);
 
 #[repr(C)]
 pub struct ScratchBuf {

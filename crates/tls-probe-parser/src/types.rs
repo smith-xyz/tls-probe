@@ -55,11 +55,18 @@ pub struct ParsedClientHello {
     pub cipher_suites: Vec<u16>,
     pub compression_methods: Vec<u8>,
     pub extensions: Vec<Extension>,
+    pub extension_ids: Vec<u16>,
     pub supported_versions: Vec<u16>,
     pub supported_groups: Vec<u16>,
     pub signature_algorithms: Vec<u16>,
+    pub signature_algorithms_cert: Vec<u16>,
     pub key_share_groups: Vec<u16>,
     pub sni: Option<String>,
+    pub alpn: Vec<String>,
+    pub psk_offered: bool,
+    pub early_data_offered: bool,
+    pub psk_key_exchange_modes_offered: bool,
+    pub session_ticket_offered: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -72,4 +79,5 @@ pub struct ParsedServerHello {
     pub extensions: Vec<Extension>,
     pub negotiated_version: Option<u16>,
     pub key_share_group: Option<u16>,
+    pub psk_selected: bool,
 }

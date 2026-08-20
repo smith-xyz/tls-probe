@@ -1,6 +1,7 @@
 use crate::error::ParseError;
 use crate::extensions::{
-    extract_key_share_groups, extract_supported_versions, parse_extensions, ExtensionType,
+    extract_key_share_groups, extract_supported_versions, is_psk_selected, parse_extensions,
+    ExtensionType,
 };
 use crate::types::ParsedServerHello;
 use crate::{TLS_HANDSHAKE_HDR_LEN, TLS_RANDOM_LEN, TLS_RECORD_HDR_LEN};
@@ -45,6 +46,7 @@ pub fn parse_server_hello(payload: &[u8]) -> Result<ParsedServerHello, ParseErro
     let mut extensions = Vec::new();
     let mut negotiated_version = None;
     let mut key_share_group = None;
+    let mut psk_selected = false;
 
     if offset + 2 <= payload.len() {
         let ext_len = u16::from_be_bytes([payload[offset], payload[offset + 1]]) as usize;
@@ -66,6 +68,9 @@ pub fn parse_server_hello(payload: &[u8]) -> Result<ParsedServerHello, ParseErro
                         let groups = extract_key_share_groups(ext, false);
                         key_share_group = groups.first().copied();
                     }
+                    ExtensionType::PreSharedKey => {
+                        psk_selected = is_psk_selected(ext);
+                    }
                     _ => {}
                 }
             }
@@ -81,5 +86,6 @@ pub fn parse_server_hello(payload: &[u8]) -> Result<ParsedServerHello, ParseErro
         extensions,
         negotiated_version,
         key_share_group,
+        psk_selected,
     })
 }

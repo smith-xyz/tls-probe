@@ -1,5 +1,4 @@
 use std::fs;
-use std::net::IpAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -26,7 +25,7 @@ const LOOPBACK_IFACE: &str = "lo";
 const DEFAULT_ROUTE_DEST: &str = "00000000";
 
 /// Operstate values considered "active" for TC attach.
-/// Bridges (br-ex) report "unknown" when up; physical NICs report "up".
+/// Bridge interfaces report "unknown" when up; physical NICs report "up".
 const ACTIVE_OPERSTATES: &[&str] = &["up", "unknown"];
 
 // --- IPv4/IPv6 link-local detection ---
@@ -37,10 +36,6 @@ const IPV4_LINK_LOCAL_MASK: u32 = 0x0000_FFFF;
 
 /// IPv6 scope value for link-local addresses in /proc/net/if_inet6.
 const IPV6_SCOPE_LINK_LOCAL: u32 = 0x20;
-
-/// fe80::/10 prefix mask and value for IPv6 link-local detection.
-const IPV6_LINK_LOCAL_PREFIX: u16 = 0xfe80;
-const IPV6_LINK_LOCAL_MASK: u16 = 0xffc0;
 
 // --- eBPF program/map identifiers (must match names in the eBPF object) ---
 
@@ -61,10 +56,14 @@ impl EbpfProgram {
 
 const TLS_EVENTS_MAP_NAME: &str = "TLS_EVENTS";
 const RINGBUF_DROPS_MAP_NAME: &str = "RINGBUF_DROPS";
+const CONN_MAP_NAME: &str = "CONN_MAP";
 
 /// Names of the process-attribution kprobes, which double as the target
 /// kernel function names (`tcp_v4_connect`/`tcp_v6_connect`).
 const CONNECT_KPROBES: [&str; 2] = ["tcp_v4_connect", "tcp_v6_connect"];
+
+/// Name of the process-attribution kretprobe for inbound (accept-side) attribution.
+const ACCEPT_KRETPROBE: &str = "inet_csk_accept";
 
 const EVENT_LOOP_POLL_MS: u64 = 100;
 
@@ -100,10 +99,10 @@ fn detect_default_interface() -> Result<String, ProbeError> {
 }
 
 /// Discovers interfaces suitable for TLS capture by checking two properties:
-///   1. Operationally UP (operstate is "up" or "unknown" — bridges report "unknown" when active)
+///   1. Operationally UP (operstate is "up" or "unknown" — bridge interfaces report "unknown" when active)
 ///   2. Has at least one routable IP address (IPv4 or IPv6, excluding link-local)
 ///
-/// This approach is platform-agnostic: works on OCP (br-ex), bare metal (eth0),
+/// This approach is platform-agnostic: works on bridge interfaces, bare metal (eth0),
 /// cloud VMs (ens5), containers (eth0), without hardcoding any interface names.
 fn detect_routable_interfaces() -> Result<Vec<String>, ProbeError> {
     let entries = fs::read_dir(SYSFS_NET_DIR)
@@ -148,66 +147,50 @@ fn has_routable_address(iface: &str) -> bool {
 /// Checks /proc/net/route for non-link-local routing entries belonging to this interface.
 /// An interface with at least one non-169.254.x.x route is considered routable for IPv4.
 fn has_routable_ipv4(iface: &str) -> bool {
-    let Ok(route) = fs::read_to_string(PROC_ROUTE) else {
-        return false;
-    };
-
-    for line in route.lines().skip(1) {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() >= 8 && fields[0] == iface {
-            let dest = u32::from_str_radix(fields[1], 16).unwrap_or(0);
-            let gateway = u32::from_str_radix(fields[2], 16).unwrap_or(0);
-            let is_link_local = (dest & IPV4_LINK_LOCAL_MASK) == IPV4_LINK_LOCAL_PREFIX;
-            if !is_link_local || gateway != 0 {
-                return true;
+    if let Ok(route) = fs::read_to_string(PROC_ROUTE) {
+        return route.lines().skip(1).any(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.is_empty() {
+                return false;
             }
-        }
+            if fields[0] != iface {
+                return false;
+            }
+            if fields.len() < 3 {
+                return false;
+            }
+            if let Ok(dest) = u32::from_str_radix(fields[1], 16) {
+                // A link-local dest still counts when it has a real gateway —
+                // preserves the original defensive check for odd route tables.
+                let gateway = u32::from_str_radix(fields[2], 16).unwrap_or(0);
+                (dest & IPV4_LINK_LOCAL_MASK) != IPV4_LINK_LOCAL_PREFIX || gateway != 0
+            } else {
+                false
+            }
+        });
     }
-
     false
 }
 
-/// Parses /proc/net/if_inet6 to find non-link-local IPv6 addresses on the interface.
-/// Format: address_hex ifindex prefix_len scope flags iface_name
+/// Checks /proc/net/if_inet6 for routable IPv6 addresses on this interface.
 fn has_routable_ipv6(iface: &str) -> bool {
-    let Ok(content) = fs::read_to_string(PROC_IF_INET6) else {
-        return false;
-    };
-
-    for line in content.lines() {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() >= 6 && fields[5] == iface {
-            let scope = u32::from_str_radix(fields[3], 16).unwrap_or(IPV6_SCOPE_LINK_LOCAL);
-            if scope != IPV6_SCOPE_LINK_LOCAL {
-                if let Some(addr) = parse_hex_ipv6(fields[0]) {
-                    if !addr.is_loopback() && !is_link_local_v6(&addr) {
-                        return true;
-                    }
-                }
+    if let Ok(content) = fs::read_to_string(PROC_IF_INET6) {
+        return content.lines().any(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 6 {
+                return false;
             }
-        }
+            if fields[5] != iface {
+                return false;
+            }
+            if let Ok(scope) = u32::from_str_radix(fields[3], 16) {
+                scope != IPV6_SCOPE_LINK_LOCAL
+            } else {
+                false
+            }
+        });
     }
-
     false
-}
-
-/// Parses a 32-char hex string from /proc/net/if_inet6 into an IpAddr.
-fn parse_hex_ipv6(hex: &str) -> Option<IpAddr> {
-    if hex.len() != 32 {
-        return None;
-    }
-    let mut octets = [0u8; 16];
-    for (i, octet) in octets.iter_mut().enumerate() {
-        *octet = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
-    }
-    Some(IpAddr::V6(octets.into()))
-}
-
-fn is_link_local_v6(addr: &IpAddr) -> bool {
-    match addr {
-        IpAddr::V6(v6) => (v6.segments()[0] & IPV6_LINK_LOCAL_MASK) == IPV6_LINK_LOCAL_PREFIX,
-        _ => false,
-    }
 }
 
 /// Manages eBPF program lifecycle: load once, attach to multiple interfaces.
@@ -269,7 +252,7 @@ impl TlsProbeLoader {
     }
 
     /// Loads ingress and egress TC programs, plus the process-attribution
-    /// kprobes, into the kernel exactly once.
+    /// kprobes and kretprobes, into the kernel exactly once.
     fn load_programs(&mut self) -> Result<(), ProbeError> {
         for prog in [EbpfProgram::Ingress, EbpfProgram::Egress] {
             let classifier: &mut SchedClassifier = self
@@ -288,7 +271,7 @@ impl TlsProbeLoader {
             })?;
         }
 
-        match self.load_and_attach_connect_kprobes() {
+        match self.load_and_attach_attribution_probes() {
             Ok(()) => {}
             Err(e) => {
                 warn!("Process attribution disabled: {e}");
@@ -301,10 +284,12 @@ impl TlsProbeLoader {
         Ok(())
     }
 
-    /// Loads and attaches the `tcp_v4_connect`/`tcp_v6_connect` kprobes used
-    /// for process attribution. Attached globally (not per-interface): they
-    /// fire on any connect(2) call in the calling process's context.
-    fn load_and_attach_connect_kprobes(&mut self) -> Result<(), ProbeError> {
+    /// Loads and attaches both kprobes (`tcp_v4_connect`/`tcp_v6_connect`) and
+    /// kretprobe (`inet_csk_accept`) used for process attribution. Attached
+    /// globally (not per-interface): they fire on system calls in the calling
+    /// process's context.
+    fn load_and_attach_attribution_probes(&mut self) -> Result<(), ProbeError> {
+        // Attach outbound (connect-side) kprobes
         for name in CONNECT_KPROBES {
             let probe: &mut KProbe = self
                 .ebpf
@@ -324,6 +309,30 @@ impl TlsProbeLoader {
 
             info!("Attached kprobe: {}", name);
         }
+
+        // Attach inbound (accept-side) kretprobe. aya has no separate
+        // KRetProbe userspace type: the #[kretprobe] section in the eBPF
+        // object makes this KProbe attach as a return probe.
+        let kretprobe: &mut KProbe = self
+            .ebpf
+            .program_mut(ACCEPT_KRETPROBE)
+            .ok_or_else(|| ProbeError::AttachError(format!("{} not found", ACCEPT_KRETPROBE)))?
+            .try_into()
+            .map_err(|e| {
+                ProbeError::AttachError(format!(
+                    "Invalid kretprobe type for {}: {e:?}",
+                    ACCEPT_KRETPROBE
+                ))
+            })?;
+
+        kretprobe.load().map_err(|e| {
+            ProbeError::LoadError(format!("Failed to load {}: {e:?}", ACCEPT_KRETPROBE))
+        })?;
+        kretprobe.attach(ACCEPT_KRETPROBE, 0).map_err(|e| {
+            ProbeError::AttachError(format!("Failed to attach {}: {e:?}", ACCEPT_KRETPROBE))
+        })?;
+
+        info!("Attached kretprobe: {}", ACCEPT_KRETPROBE);
 
         Ok(())
     }
@@ -370,6 +379,21 @@ impl TlsProbeLoader {
         self.ebpf
             .take_map(RINGBUF_DROPS_MAP_NAME)
             .and_then(|m| aya::maps::PerCpuArray::try_from(m).ok())
+    }
+
+    /// Takes the CONN_MAP for attribution verification (e.g., self-test).
+    pub fn take_conn_map(
+        &mut self,
+    ) -> Option<
+        aya::maps::HashMap<
+            aya::maps::MapData,
+            tls_probe_common::ConnKey,
+            tls_probe_common::ConnInfo,
+        >,
+    > {
+        self.ebpf
+            .take_map(CONN_MAP_NAME)
+            .and_then(|m| aya::maps::HashMap::try_from(m).ok())
     }
 
     /// Starts reading TLS capture events from the ring buffer, forwarding to the channel.
@@ -449,25 +473,18 @@ impl TlsProbeLoader {
             tokio::time::sleep(tokio::time::Duration::from_millis(EVENT_LOOP_POLL_MS)).await;
         }
 
-        drain.abort();
-
-        Ok(())
-    }
-
-    pub fn detach(&mut self) {
-        for iface in &self.attached_interfaces {
-            let _ =
-                tc::qdisc_detach_program(iface, TcAttachType::Ingress, EbpfProgram::Ingress.name());
-            let _ =
-                tc::qdisc_detach_program(iface, TcAttachType::Egress, EbpfProgram::Egress.name());
-            info!("Detached TC programs from {}", iface);
+        // The drain task only re-checks `running` after a readiness wakeup; on
+        // a quiet ringbuf it parks in readable_mut().await indefinitely. Give
+        // it a short grace to flush stragglers, then abort — post-shutdown
+        // events are not worth hanging SIGTERM for.
+        let mut drain = drain;
+        if tokio::time::timeout(tokio::time::Duration::from_secs(2), &mut drain)
+            .await
+            .is_err()
+        {
+            drain.abort();
+            let _ = drain.await;
         }
-        self.attached_interfaces.clear();
-    }
-}
-
-impl Drop for TlsProbeLoader {
-    fn drop(&mut self) {
-        self.detach();
+        Ok(())
     }
 }

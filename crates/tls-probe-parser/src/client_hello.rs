@@ -1,7 +1,9 @@
 use crate::error::ParseError;
 use crate::extensions::{
-    extract_key_share_groups, extract_signature_algorithms, extract_sni, extract_supported_groups,
-    extract_supported_versions, parse_extensions, ExtensionType,
+    extract_alpn, extract_key_share_groups, extract_signature_algorithms,
+    extract_signature_algorithms_cert, extract_sni, extract_supported_groups,
+    extract_supported_versions, has_early_data, has_pre_shared_key, has_psk_key_exchange_modes,
+    has_session_ticket, parse_extensions, ExtensionType,
 };
 use crate::types::ParsedClientHello;
 use crate::{TLS_HANDSHAKE_HDR_LEN, TLS_RANDOM_LEN, TLS_RECORD_HDR_LEN};
@@ -62,11 +64,18 @@ pub fn parse_client_hello(payload: &[u8]) -> Result<ParsedClientHello, ParseErro
     offset += comp_len;
 
     let mut extensions = Vec::new();
+    let mut extension_ids = Vec::new();
     let mut supported_versions = Vec::new();
     let mut supported_groups = Vec::new();
     let mut signature_algorithms = Vec::new();
+    let mut signature_algorithms_cert = Vec::new();
     let mut key_share_groups = Vec::new();
     let mut sni = None;
+    let mut alpn = Vec::new();
+    let mut psk_offered = false;
+    let mut early_data_offered = false;
+    let mut psk_key_exchange_modes_offered = false;
+    let mut session_ticket_offered = false;
 
     if offset + 2 <= payload.len() {
         let ext_len = u16::from_be_bytes([payload[offset], payload[offset + 1]]) as usize;
@@ -76,6 +85,16 @@ pub fn parse_client_hello(payload: &[u8]) -> Result<ParsedClientHello, ParseErro
         let parse_len = available.min(ext_len);
 
         if parse_len > 0 {
+            // Extract raw extension IDs from the extension data
+            let mut ext_offset = offset;
+            while ext_offset + 4 <= offset + parse_len {
+                let ext_type = u16::from_be_bytes([payload[ext_offset], payload[ext_offset + 1]]);
+                let ext_data_len =
+                    u16::from_be_bytes([payload[ext_offset + 2], payload[ext_offset + 3]]) as usize;
+                extension_ids.push(ext_type);
+                ext_offset += 4 + ext_data_len;
+            }
+
             extensions = parse_extensions(&payload[offset..offset + parse_len])?;
 
             for ext in &extensions {
@@ -89,11 +108,30 @@ pub fn parse_client_hello(payload: &[u8]) -> Result<ParsedClientHello, ParseErro
                     ExtensionType::SignatureAlgorithms => {
                         signature_algorithms = extract_signature_algorithms(ext);
                     }
+                    ExtensionType::SignatureAlgorithmsCert => {
+                        signature_algorithms_cert = extract_signature_algorithms_cert(ext);
+                    }
                     ExtensionType::KeyShare => {
                         key_share_groups = extract_key_share_groups(ext, true);
                     }
                     ExtensionType::ServerName => {
                         sni = extract_sni(ext);
+                    }
+                    ExtensionType::PreSharedKey => {
+                        psk_offered = has_pre_shared_key(ext);
+                    }
+                    ExtensionType::EarlyData => {
+                        early_data_offered = has_early_data(ext);
+                    }
+                    ExtensionType::PskKeyExchangeModes => {
+                        psk_key_exchange_modes_offered = has_psk_key_exchange_modes(ext);
+                    }
+                    ExtensionType::SessionTicket => {
+                        session_ticket_offered = has_session_ticket(ext);
+                    }
+                    // Extract ALPN for JA4 fingerprinting
+                    ExtensionType::ApplicationLayerProtocolNegotiation => {
+                        alpn = extract_alpn(ext);
                     }
                     _ => {}
                 }
@@ -108,10 +146,17 @@ pub fn parse_client_hello(payload: &[u8]) -> Result<ParsedClientHello, ParseErro
         cipher_suites,
         compression_methods,
         extensions,
+        extension_ids,
         supported_versions,
         supported_groups,
         signature_algorithms,
+        signature_algorithms_cert,
         key_share_groups,
         sni,
+        alpn,
+        psk_offered,
+        early_data_offered,
+        psk_key_exchange_modes_offered,
+        session_ticket_offered,
     })
 }

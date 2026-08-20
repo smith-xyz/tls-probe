@@ -1,4 +1,4 @@
-.PHONY: all build release build-ebpf build-ebpf-release build-cli build-cli-release clean test check fmt fmt-check dev help selinux-build selinux-install smoke
+.PHONY: all build release build-ebpf build-ebpf-release build-cli build-cli-release clean test check fmt fmt-check dev help selinux-build selinux-install smoke container-image container-test container-smoke container-bench container-shell
 
 CARGO := cargo
 TARGET_DIR := target
@@ -41,6 +41,13 @@ help:
 	@echo "SELinux (RHEL/Fedora):"
 	@echo "  selinux-build  - Build SELinux policy module"
 	@echo "  selinux-install - Install SELinux policy module"
+	@echo ""
+	@echo "Container (any host, needs a rootful/privileged podman — see docs/dev-container.md):"
+	@echo "  container-image  - Build the dev/test container image"
+	@echo "  container-test   - build-ebpf + test + clippy + fmt-check (mirrors CI 'test' job)"
+	@echo "  container-smoke  - Release build + runtime smoke test (mirrors CI 'smoke-test' job)"
+	@echo "  container-bench  - Release build + contrib/bench/run_bench.sh"
+	@echo "  container-shell  - Interactive shell in the container"
 
 dev: fmt check build-cli test
 	@echo "Development build complete"
@@ -86,3 +93,18 @@ selinux-build:
 
 selinux-install:
 	cd selinux && make install
+
+container-image:
+	contrib/dev/run.sh image
+
+container-test:
+	contrib/dev/run.sh test
+
+container-smoke:
+	contrib/dev/run.sh smoke
+
+container-bench:
+	contrib/dev/run.sh bench
+
+container-shell:
+	contrib/dev/run.sh shell

@@ -8,6 +8,7 @@
     "dst",
     "handshake_type",
     "key_exchange_groups",
+    "schema_version",
     "signature_algorithms",
     "src",
     "timestamp",
@@ -15,11 +16,52 @@
     "tls_version"
   ],
   "properties": {
+    "alert_description": {
+      "description": "Alert description (present only for alerts): named per RFC 8446, e.g. 'protocol_version(70)'",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "alert_level": {
+      "description": "Alert level (present only for alerts): 'warning', 'fatal', 'unknown(N)'",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "certificate": {
+      "description": "Parsed leaf certificate (Certificate handshake events only)",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Certificate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cgroup_id": {
+      "description": "cgroup v2 inode number for container attribution",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
     "cipher_suites": {
       "type": "array",
       "items": {
         "$ref": "#/definitions/CipherSuiteInfo"
       }
+    },
+    "container_id": {
+      "description": "Container ID (from cgroup path); null if unresolvable",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "dst": {
       "description": "Destination address:port",
@@ -27,6 +69,13 @@
     },
     "handshake_type": {
       "type": "string"
+    },
+    "ja4": {
+      "description": "JA4 client fingerprint (ClientHello events only); fingerprints TLS client behavior for identification and threat detection",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "key_exchange_groups": {
       "type": "array",
@@ -44,6 +93,16 @@
         }
       ]
     },
+    "negotiation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Negotiation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "pid": {
       "type": [
         "integer",
@@ -52,14 +111,51 @@
       "format": "uint32",
       "minimum": 0.0
     },
+    "pod_uid": {
+      "description": "Pod UID (from cgroup path, Kubernetes only); null if not in a pod",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "process_name": {
       "type": [
         "string",
         "null"
       ]
     },
+    "reassembled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "resumption": {
+      "description": "Resumption/0-RTT signals; omitted if all flags are false",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Resumption"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "type": "string"
+    },
     "signature_algorithms": {
       "type": "array",
+      "items": {
+        "$ref": "#/definitions/SignatureAlgorithmInfo"
+      }
+    },
+    "signature_algorithms_cert": {
+      "description": "signature_algorithms_cert (0x0032) — what the client accepts in certificate chains; ML-DSA here signals PQC-cert readiness",
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "$ref": "#/definitions/SignatureAlgorithmInfo"
       }
@@ -85,9 +181,81 @@
     },
     "tls_version": {
       "type": "string"
+    },
+    "truncated": {
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "definitions": {
+    "Certificate": {
+      "description": "Parsed leaf certificate from a TLS Certificate handshake message.",
+      "type": "object",
+      "required": [
+        "expired",
+        "not_after",
+        "not_before",
+        "public_key_algorithm",
+        "public_key_bits",
+        "san_count",
+        "self_signed",
+        "signature_algorithm"
+      ],
+      "properties": {
+        "expired": {
+          "description": "Whether the certificate has expired relative to capture wall clock",
+          "type": "boolean"
+        },
+        "issuer_cn": {
+          "description": "Issuer CN; None if absent",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "not_after": {
+          "description": "RFC 3339 timestamp (not_after)",
+          "type": "string"
+        },
+        "not_before": {
+          "description": "RFC 3339 timestamp (not_before)",
+          "type": "string"
+        },
+        "public_key_algorithm": {
+          "description": "Public key algorithm: \"rsa\", \"ec\", \"dsa\", or \"unknown\"",
+          "type": "string"
+        },
+        "public_key_bits": {
+          "description": "Public key size: RSA modulus bits or EC curve size",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "san_count": {
+          "description": "Count of Subject Alternative Names (SAN)",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "self_signed": {
+          "description": "Whether issuer == subject",
+          "type": "boolean"
+        },
+        "signature_algorithm": {
+          "description": "Signature algorithm from the certificate: \"sha256WithRSAEncryption\", etc.",
+          "type": "string"
+        },
+        "subject_cn": {
+          "description": "Subject CN; None if absent",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "CipherSuiteInfo": {
       "type": "object",
       "required": [
@@ -106,6 +274,122 @@
       }
     },
     "KeyExchangeInfo": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "Negotiation": {
+      "description": "Negotiation object attached to ServerHello or Alert events. Wire facts only: no derived or themed fields. Reasoning about client preferences vs negotiated outcomes is reserved for downstream consumers.",
+      "type": "object",
+      "required": [
+        "client_max_version",
+        "client_offered_groups",
+        "early_data_offered",
+        "mtls",
+        "mtls_requested",
+        "outcome",
+        "psk_selected"
+      ],
+      "properties": {
+        "client_max_version": {
+          "type": "string"
+        },
+        "client_offered_groups": {
+          "description": "Client's offered supported_groups (GREASE filtered). Empty if no supported_groups or key_share extension was parsed. Used to determine whether selected_group was available to the client.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/OfferedGroup"
+          }
+        },
+        "client_sni": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "early_data_offered": {
+          "type": "boolean"
+        },
+        "mtls": {
+          "type": "boolean"
+        },
+        "mtls_requested": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "psk_selected": {
+          "type": "boolean"
+        },
+        "selected_group": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SelectedGroup"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "OfferedGroup": {
+      "description": "Offered key exchange group info.",
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "Resumption": {
+      "description": "Resumption/0-RTT signals: PSK and early_data offer/select",
+      "type": "object",
+      "required": [
+        "early_data_offered",
+        "psk_offered",
+        "psk_selected",
+        "session_ticket_offered"
+      ],
+      "properties": {
+        "early_data_offered": {
+          "type": "boolean"
+        },
+        "psk_offered": {
+          "type": "boolean"
+        },
+        "psk_selected": {
+          "type": "boolean"
+        },
+        "session_ticket_offered": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SelectedGroup": {
+      "description": "Selected key exchange group info.",
       "type": "object",
       "required": [
         "id",

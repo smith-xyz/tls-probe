@@ -1,5 +1,8 @@
 # Rust
 /target/
+# Linux build cache mount point used by the containerized (podman) gates —
+# real artifacts live in the tlsprobe-target volume, this is just the shell.
+/target-linux/
 **/*.rs.bk
 
 # CI build context

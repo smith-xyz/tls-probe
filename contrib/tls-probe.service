@@ -5,6 +5,11 @@ After=network.target
 
 [Service]
 Type=simple
+# Host deploy: the default --cgroup-root (/sys/fs/cgroup) is correct as-is;
+# --cgroup-root is only needed when running containerized with the host
+# cgroupfs mounted elsewhere. Add --no-self-test to skip the startup
+# attribution canary (a single loopback connection) if loopback traffic
+# from this unit is undesirable.
 ExecStart=/usr/local/bin/tls-probe capture --ebpf /usr/local/lib/tls-probe-ebpf --interface auto --output /var/log/tls-probe/events.json
 Restart=on-failure
 RestartSec=5
@@ -17,7 +22,7 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/log/tls-probe
-ReadOnlyPaths=/sys/kernel/debug /sys/fs/bpf
+ReadOnlyPaths=/sys/kernel/debug /sys/fs/bpf /sys/fs/cgroup
 
 AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
 CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE

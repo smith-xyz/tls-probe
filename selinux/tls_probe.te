@@ -1,4 +1,4 @@
-policy_module(tls_probe, 1.0.0)
+policy_module(tls_probe, 1.1.0)
 
 require {
     type bin_t;
@@ -7,13 +7,15 @@ require {
     type proc_t;
     type user_home_t;
     type var_log_t;
+    type cgroup_t;
     class capability { net_admin sys_resource };
     class capability2 { bpf perfmon };
     class bpf { map_create map_read map_write prog_load prog_run };
     class file { create read write open getattr execute execute_no_trans map };
-    class dir { search read write add_name };
+    class dir { search read write add_name open getattr };
     class netlink_route_socket { create bind getattr read write nlmsg_read nlmsg_write };
     class perf_event { open read write };
+    class tcp_socket { create bind connect listen accept getattr getopt setopt read write shutdown };
 }
 
 type tls_probe_t;
@@ -46,3 +48,36 @@ allow tls_probe_t tls_probe_log_t:file { create read write open getattr };
 
 allow tls_probe_t var_log_t:dir { search read write add_name };
 allow tls_probe_t var_log_t:file { create read write open getattr };
+
+########################################################################
+# Reviewed 2026-08-06 against the v1.0 feature set (M0-M5).
+#
+# Checked, already covered by existing allows — no change needed:
+# - inet_csk_accept kretprobe (inbound/accept-side attribution): attaches
+#   through the same perf_event + bpf prog_load path as the existing
+#   tcp_v{4,6}_connect kprobes — self:perf_event + self:bpf +
+#   capability2 { bpf perfmon }.
+# - bpf_get_current_cgroup_id() in the connect/accept probes: in-kernel
+#   BPF helper, no userspace-visible permission.
+# - REASM_MAP (multi-packet reassembly) and enlarged scratch/ringbuf:
+#   map operations covered by self:bpf map_create/map_read/map_write.
+#
+# New since 1.0.0 — allows added below:
+# - Container attribution: userspace resolves cgroup ids by walking the
+#   cgroup2 filesystem (readdir + stat on every entry). /sys/fs/cgroup
+#   is labeled cgroup_t; the existing sysfs_t rules do not cover it.
+# - Attribution self-test: at startup the probe makes one loopback TCP
+#   connection to itself (ephemeral port) to verify process attribution
+#   works on the running kernel. Skippable with --no-self-test if these
+#   socket allows are unwanted in a hardened deployment.
+########################################################################
+
+# cgroup2 walk for container/pod attribution (read-only)
+allow tls_probe_t cgroup_t:dir { search read open getattr };
+allow tls_probe_t cgroup_t:file getattr;
+
+# startup attribution self-test: loopback listener + connect, ephemeral port
+allow tls_probe_t self:tcp_socket { create bind connect listen accept getattr getopt setopt read write shutdown };
+corenet_tcp_bind_generic_node(tls_probe_t)
+corenet_tcp_bind_all_unreserved_ports(tls_probe_t)
+corenet_tcp_connect_all_unreserved_ports(tls_probe_t)

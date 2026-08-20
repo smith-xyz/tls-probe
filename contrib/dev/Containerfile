@@ -1,0 +1,30 @@
+# Local dev/test container for tls-probe: build-ebpf/test/clippy/fmt,
+# the runtime smoke test, and the perf bench on any host with podman.
+#
+# Base is Debian trixie for its OpenSSL 3.5+ (ML-KEM/X25519MLKEM768
+# support, needed for the netns_pqc smoke scenario) — Ubuntu 22.04/24.04
+# both stop at OpenSSL 3.0.x. This container does NOT need to match the
+# GLIBC_MAX=2.34 release gate in .github/workflows/ci.yml: that check runs
+# against the actual shipped binary, built directly on GitHub's
+# ubuntu-22.04 runners in the `build-cli` job, which this container never
+# touches. Binaries built in here never leave it.
+FROM docker.io/library/debian:trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN apt-get update -qq && apt-get install -y -qq \
+        build-essential clang llvm libelf-dev pkg-config \
+        curl ca-certificates git \
+        python3 python3-jsonschema \
+        openssl iperf3 iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+        sh -s -- -y --default-toolchain nightly --profile minimal && \
+    rustup component add rust-src --toolchain nightly && \
+    cargo install bpf-linker
+
+WORKDIR /work

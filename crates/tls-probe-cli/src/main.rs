@@ -1,4 +1,12 @@
+mod certificate;
 mod commands;
+mod containers;
+mod correlate;
+mod ja4;
+mod reasm;
+mod record_walk;
+#[cfg(any(target_os = "linux", test))]
+mod tls;
 
 #[cfg(target_os = "linux")]
 mod capabilities;
@@ -8,8 +16,8 @@ mod error;
 mod loader;
 #[cfg(any(target_os = "linux", test))]
 mod pipeline;
-#[cfg(any(target_os = "linux", test))]
-mod tls;
+#[cfg(target_os = "linux")]
+mod self_test;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
