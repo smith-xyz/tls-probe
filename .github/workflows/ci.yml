@@ -284,10 +284,15 @@ jobs:
           path: attribution/
 
       - name: Start containerized workload
-        # curlimages/curl's entrypoint is curl itself, so `sleep` must replace
-        # the entrypoint to keep the container alive between exec calls.
+        # --network host: shares the host's network namespace so the kprobe
+        # and TC classifier both see the same IP addresses. Without this,
+        # Docker bridge NAT rewrites the source IP between the kprobe
+        # (which sees the container's veth addr) and TC (which sees the
+        # SNAT'd host addr), breaking the CONN_MAP 4-tuple match.
+        # The container still gets its own cgroup, so container_id
+        # resolution via /sys/fs/cgroup still works.
         run: |
-          docker run -d --name tls-workload --entrypoint sleep \
+          docker run -d --name tls-workload --network host --entrypoint sleep \
             curlimages/curl:latest 300
 
       - name: Capture workload TLS traffic from the host
