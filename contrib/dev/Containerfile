@@ -16,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN apt-get update -qq && apt-get install -y -qq \
-        build-essential clang llvm libelf-dev pkg-config \
+        build-essential clang llvm llvm-dev libelf-dev pkg-config \
         curl ca-certificates git \
         python3 python3-jsonschema \
         openssl iperf3 iproute2 \
