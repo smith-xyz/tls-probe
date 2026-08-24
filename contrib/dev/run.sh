@@ -17,6 +17,7 @@
 #   contrib/dev/run.sh test                  # build-ebpf + cargo test + clippy + fmt-check (mirrors CI `test` job)
 #   contrib/dev/run.sh smoke                 # release build + scripts/smoke_test.py (mirrors CI `smoke-test` job)
 #   contrib/dev/run.sh bench [-- bench args] # release build + contrib/bench/run_bench.sh
+#   contrib/dev/run.sh attribution           # release build + process attribution test
 #   contrib/dev/run.sh shell                 # interactive shell in the container
 
 set -euo pipefail
@@ -106,6 +107,15 @@ case "$cmd" in
                 $bench_args
         "
         ;;
+    attribution)
+        run_in_container "
+            cargo xtask build-ebpf --profile release &&
+            cargo build --release -p tls-probe &&
+            python3 scripts/attribution_test.py \
+                --probe target-linux/release/tls-probe \
+                --ebpf target-linux/bpfel-unknown-none/release/tls-probe-ebpf
+        "
+        ;;
     shell)
         ensure_volumes
         ensure_image
@@ -118,7 +128,7 @@ case "$cmd" in
             "$IMAGE" bash
         ;;
     *)
-        echo "usage: $0 {image|test|smoke|bench|shell}" >&2
+        echo "usage: $0 {image|test|smoke|bench|attribution|shell}" >&2
         exit 2
         ;;
 esac

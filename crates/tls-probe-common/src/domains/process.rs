@@ -28,7 +28,20 @@ pub struct ConnInfo {
     pub cgroup_id: u64,
 }
 
+/// Stash entry passed from a connect kprobe (entry) to its kretprobe (return).
+/// At kprobe entry the source address/port are not yet assigned; the kretprobe
+/// reads the now-populated `sock_common` via `sock_ptr` and inserts into
+/// `CONN_MAP` using the saved `info`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ConnStash {
+    pub sock_ptr: u64,
+    pub info: ConnInfo,
+}
+
 #[cfg(all(feature = "user", target_os = "linux"))]
 unsafe impl aya::Pod for ConnKey {}
 #[cfg(all(feature = "user", target_os = "linux"))]
 unsafe impl aya::Pod for ConnInfo {}
+#[cfg(all(feature = "user", target_os = "linux"))]
+unsafe impl aya::Pod for ConnStash {}

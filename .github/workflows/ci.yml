@@ -284,12 +284,10 @@ jobs:
           path: attribution/
 
       - name: Start containerized workload
-        # --network host: the container shares the host's network namespace so
-        # the kprobe and TC classifier both see the same IP addresses (no Docker
-        # SNAT mismatch). cgroup attribution still works because the container
-        # has its own cgroup, which is what the test actually validates.
+        # curlimages/curl's entrypoint is curl itself, so `sleep` must replace
+        # the entrypoint to keep the container alive between exec calls.
         run: |
-          docker run -d --name tls-workload --network host --entrypoint sleep \
+          docker run -d --name tls-workload --entrypoint sleep \
             curlimages/curl:latest 300
 
       - name: Capture workload TLS traffic from the host

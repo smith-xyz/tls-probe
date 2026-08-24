@@ -58,9 +58,16 @@ const TLS_EVENTS_MAP_NAME: &str = "TLS_EVENTS";
 const RINGBUF_DROPS_MAP_NAME: &str = "RINGBUF_DROPS";
 const CONN_MAP_NAME: &str = "CONN_MAP";
 
-/// Names of the process-attribution kprobes, which double as the target
-/// kernel function names (`tcp_v4_connect`/`tcp_v6_connect`).
+/// Connect-side kprobe entry points (stash sock pointer + process info).
 const CONNECT_KPROBES: [&str; 2] = ["tcp_v4_connect", "tcp_v6_connect"];
+
+/// Connect-side kretprobe names in the eBPF object. Each reads the now-populated
+/// 4-tuple and moves the stash into CONN_MAP. The second element is the kernel
+/// function to attach to.
+const CONNECT_KRETPROBES: [(&str, &str); 2] = [
+    ("tcp_v4_connect_ret", "tcp_v4_connect"),
+    ("tcp_v6_connect_ret", "tcp_v6_connect"),
+];
 
 /// Name of the process-attribution kretprobe for inbound (accept-side) attribution.
 const ACCEPT_KRETPROBE: &str = "inet_csk_accept";
@@ -284,12 +291,12 @@ impl TlsProbeLoader {
         Ok(())
     }
 
-    /// Loads and attaches both kprobes (`tcp_v4_connect`/`tcp_v6_connect`) and
-    /// kretprobe (`inet_csk_accept`) used for process attribution. Attached
-    /// globally (not per-interface): they fire on system calls in the calling
-    /// process's context.
+    /// Loads and attaches connect kprobe/kretprobe pairs and the accept
+    /// kretprobe used for process attribution. Attached globally (not
+    /// per-interface): they fire on system calls in the calling process's
+    /// context.
     fn load_and_attach_attribution_probes(&mut self) -> Result<(), ProbeError> {
-        // Attach outbound (connect-side) kprobes
+        // Attach outbound (connect-side) kprobe entries — stash sock ptr + info
         for name in CONNECT_KPROBES {
             let probe: &mut KProbe = self
                 .ebpf
@@ -308,6 +315,29 @@ impl TlsProbeLoader {
                 .map_err(|e| ProbeError::AttachError(format!("Failed to attach {name}: {e:?}")))?;
 
             info!("Attached kprobe: {}", name);
+        }
+
+        // Attach outbound (connect-side) kretprobes — read 4-tuple, insert CONN_MAP
+        for (prog_name, fn_name) in CONNECT_KRETPROBES {
+            let probe: &mut KProbe = self
+                .ebpf
+                .program_mut(prog_name)
+                .ok_or_else(|| ProbeError::AttachError(format!("{prog_name} not found")))?
+                .try_into()
+                .map_err(|e| {
+                    ProbeError::AttachError(format!(
+                        "Invalid kretprobe type for {prog_name}: {e:?}"
+                    ))
+                })?;
+
+            probe
+                .load()
+                .map_err(|e| ProbeError::LoadError(format!("Failed to load {prog_name}: {e:?}")))?;
+            probe.attach(fn_name, 0).map_err(|e| {
+                ProbeError::AttachError(format!("Failed to attach {prog_name}: {e:?}"))
+            })?;
+
+            info!("Attached kretprobe: {} -> {}", prog_name, fn_name);
         }
 
         // Attach inbound (accept-side) kretprobe. aya has no separate

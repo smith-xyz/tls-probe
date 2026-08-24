@@ -1,4 +1,4 @@
-.PHONY: all build release build-ebpf build-ebpf-release build-cli build-cli-release clean test check fmt fmt-check dev help selinux-build selinux-install smoke container-image container-test container-smoke container-bench container-shell
+.PHONY: all build release build-ebpf build-ebpf-release build-cli build-cli-release clean test check fmt fmt-check dev help selinux-build selinux-install smoke container-image container-test container-smoke container-bench container-attribution container-shell
 
 CARGO := cargo
 TARGET_DIR := target
@@ -47,6 +47,7 @@ help:
 	@echo "  container-test   - build-ebpf + test + clippy + fmt-check (mirrors CI 'test' job)"
 	@echo "  container-smoke  - Release build + runtime smoke test (mirrors CI 'smoke-test' job)"
 	@echo "  container-bench  - Release build + contrib/bench/run_bench.sh"
+	@echo "  container-attribution - Release build + process/cgroup attribution test"
 	@echo "  container-shell  - Interactive shell in the container"
 
 dev: fmt check build-cli test
@@ -105,6 +106,9 @@ container-smoke:
 
 container-bench:
 	contrib/dev/run.sh bench
+
+container-attribution:
+	contrib/dev/run.sh attribution
 
 container-shell:
 	contrib/dev/run.sh shell

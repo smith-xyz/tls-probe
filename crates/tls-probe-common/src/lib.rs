@@ -6,7 +6,7 @@ extern crate std;
 pub mod codes;
 pub mod domains;
 
-pub use domains::process::{ConnInfo, ConnKey, COMM_SIZE};
+pub use domains::process::{ConnInfo, ConnKey, ConnStash, COMM_SIZE};
 pub use domains::tls::{
     RawTlsCapture, ReasmKey, ReasmState, FLAG_ALERT, FLAG_CONTINUATION, FLAG_FRAGMENT,
     FLAG_INGRESS, MAX_REASM_SEGMENTS, RAW_CAPTURE_HEADER_SIZE, RAW_PAYLOAD_SIZE,

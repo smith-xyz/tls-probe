@@ -722,7 +722,7 @@ def alert_traffic(workdir: Path) -> TrafficReport:
     except Exception as exc:
         raise SkipScenario(f"openssl s_client feature check failed: {exc}") from exc
 
-    with LocalTlsServer(cert, key) as server:
+    with LocalTlsServer(cert, key) as _server:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(certfile=str(cert), keyfile=str(key))
         # Pin to TLS 1.3 only for the alert scenario.
@@ -1242,7 +1242,7 @@ def mtls_traffic(workdir: Path) -> TrafficReport:
                 "-out",
                 str(client_cert),
                 "-subj",
-                f"/CN=mtls-client.tls-probe.test",
+                "/CN=mtls-client.tls-probe.test",
             ],
             capture_output=True,
             text=True,
@@ -1276,7 +1276,7 @@ def mtls_traffic(workdir: Path) -> TrafficReport:
     except Exception as exc:
         raise SkipScenario(f"openssl s_server feature check failed: {exc}") from exc
 
-    with LocalTlsServer(server_cert, server_key) as server:
+    with LocalTlsServer(server_cert, server_key) as _server:
         # Spin up a distinct server socket with mTLS enabled.
         mtls_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         mtls_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1869,7 +1869,9 @@ def check_negotiation_pqc_selected(observation: Observation) -> "tuple[bool, str
         if not negotiation:
             continue
         selected_name = negotiation.get("selected_group", {}).get("name")
-        offered_names = {g.get("name") for g in negotiation.get("client_offered_groups") or []}
+        offered_names = {
+            g.get("name") for g in negotiation.get("client_offered_groups") or []
+        }
         # PQC was selected if X25519MLKEM768 is both offered and selected.
         if (
             "X25519MLKEM768" not in offered_names
@@ -1920,7 +1922,9 @@ def check_egress_negotiation_present_when_ch_present(
     )
 
 
-def check_egress_client_offered_groups_is_list(observation: Observation) -> "tuple[bool, str]":
+def check_egress_client_offered_groups_is_list(
+    observation: Observation,
+) -> "tuple[bool, str]":
     """egress (advisory): client_offered_groups must be a list of dicts with id and name fields."""
     server = observation.server_hellos
     if not server:
@@ -1936,7 +1940,11 @@ def check_egress_client_offered_groups_is_list(observation: Observation) -> "tup
                     issues += 1
                 else:
                     for group in offered_groups:
-                        if not isinstance(group, dict) or "id" not in group or "name" not in group:
+                        if (
+                            not isinstance(group, dict)
+                            or "id" not in group
+                            or "name" not in group
+                        ):
                             issues += 1
                             break
 
@@ -2267,9 +2275,7 @@ def check_mtls_completed_flagged(observation: Observation) -> "tuple[bool, str]"
         for e in observation.events
         if (e.get("negotiation") or {}).get("mtls") is True
     )
-    return mtls_completed >= 1, (
-        f"{mtls_completed} events carry negotiation.mtls=true"
-    )
+    return mtls_completed >= 1, (f"{mtls_completed} events carry negotiation.mtls=true")
 
 
 def check_client_certificate_captured(observation: Observation) -> "tuple[bool, str]":
