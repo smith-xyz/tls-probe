@@ -50,7 +50,12 @@ fn detect_host_arch() -> String {
 fn build_ebpf(profile: &str, target_arch: &str) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir("crates/tls-probe-ebpf");
-    cmd.args(["+nightly", "build"]);
+    cmd.arg("build");
+
+    // -Z build-std (config.toml) compiles core for the Tier-3 BPF target; the
+    // crate uses no unstable language features, so RUSTC_BOOTSTRAP=1 is enough
+    // to run it on stable (no nightly toolchain; needs the rust-src component).
+    cmd.env("RUSTC_BOOTSTRAP", "1");
 
     if profile == "release" {
         cmd.arg("--release");

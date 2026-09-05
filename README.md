@@ -30,11 +30,11 @@ Every event carries `schema_version`; evolution within v1 is additive. See [docs
 
 ## Prerequisites
 
-Linux 5.8+ (or 5.x with CAP_SYS_ADMIN), Rust nightly, bpf-linker.
+Linux 5.8+ (or 5.x with CAP_SYS_ADMIN), Rust **stable** with `rust-src`,
+bpf-linker (LLVM must match your toolchain).
 
 ```bash
-rustup install nightly
-rustup component add rust-src --toolchain nightly
+rustup component add rust-src
 cargo install bpf-linker
 ```
 

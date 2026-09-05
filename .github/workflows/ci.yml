@@ -22,7 +22,7 @@ env:
 
 jobs:
   # Reused (via `container:`) by jobs below that don't produce the shipped
-  # release binary: pre-installs Rust nightly + bpf-linker, and carries
+  # release binary: pre-installs stable Rust + rust-src + bpf-linker, and carries
   # OpenSSL 3.5+ so the smoke test's netns_pqc (X25519MLKEM768) scenario
   # actually runs instead of silently skipping (Ubuntu 22.04/24.04 both
   # stop at OpenSSL 3.0.x). Tag is a hash of the Containerfile, so this

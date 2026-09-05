@@ -1,3 +1,6 @@
 [toolchain]
 channel = "stable"
-components = ["rustfmt", "clippy"]
+# rust-src is required so the eBPF crate can build `core` from source for the
+# Tier-3 bpfel-unknown-none target (-Z build-std, unlocked on stable via
+# RUSTC_BOOTSTRAP=1 in xtask). No nightly toolchain needed.
+components = ["rustfmt", "clippy", "rust-src"]

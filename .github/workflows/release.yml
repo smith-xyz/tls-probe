@@ -31,11 +31,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang llvm libelf-dev
 
-      - name: Install Rust nightly + bpf-linker
+      - name: Install rust-src + bpf-linker
         run: |
-          rustup install nightly
-          rustup component add rust-src --toolchain nightly
-          cargo +nightly install bpf-linker
+          # eBPF builds on STABLE: rust-src lets -Z build-std compile core for
+          # the Tier-3 BPF target (xtask sets RUSTC_BOOTSTRAP=1). No nightly.
+          # Prebuilt bpf-linker bundles a matching LLVM (cargo install is
+          # discouraged upstream over LLVM version-matching).
+          rustup component add rust-src
+          curl -L "https://github.com/aya-rs/bpf-linker/releases/latest/download/bpf-linker-$(uname -m)-unknown-linux-musl.tar.zst" \
+            | tar --zstd -xf - -C "$HOME/.cargo/bin/"
 
       - name: Build eBPF (needed by workspace resolution)
         run: cargo xtask build-ebpf --profile release
@@ -64,11 +68,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang llvm libelf-dev
 
-      - name: Install Rust nightly + bpf-linker
+      - name: Install rust-src + bpf-linker
         run: |
-          rustup install nightly
-          rustup component add rust-src --toolchain nightly
-          cargo +nightly install bpf-linker
+          # eBPF builds on STABLE: rust-src lets -Z build-std compile core for
+          # the Tier-3 BPF target (xtask sets RUSTC_BOOTSTRAP=1). No nightly.
+          # Prebuilt bpf-linker bundles a matching LLVM (cargo install is
+          # discouraged upstream over LLVM version-matching).
+          rustup component add rust-src
+          curl -L "https://github.com/aya-rs/bpf-linker/releases/latest/download/bpf-linker-$(uname -m)-unknown-linux-musl.tar.zst" \
+            | tar --zstd -xf - -C "$HOME/.cargo/bin/"
 
       - name: Build eBPF program
         run: cargo xtask build-ebpf --profile release --target-arch ${{ matrix.bpf-arch }}

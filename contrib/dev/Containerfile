@@ -22,12 +22,16 @@ RUN apt-get update -qq && apt-get install -y -qq \
         openssl iperf3 iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
-# bpf-linker bundles its own LLVM — cargo install is NOT recommended
-# upstream due to LLVM version-matching complexity. Use the pre-built
-# release binary instead.
+# STABLE toolchain: the eBPF crate uses no unstable language features, so the
+# only nightly gate was -Z build-std (needed because bpfel-unknown-none is
+# Tier 3 and ships no prebuilt core). xtask sets RUSTC_BOOTSTRAP=1 to unlock
+# that on stable; rust-src provides the std source it compiles. No nightly.
+#
+# bpf-linker bundles its own LLVM — cargo install is NOT recommended upstream
+# due to LLVM version-matching complexity. Use the pre-built release binary.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-        sh -s -- -y --default-toolchain nightly --profile minimal && \
-    rustup component add rust-src --toolchain nightly && \
+        sh -s -- -y --default-toolchain stable --profile minimal && \
+    rustup component add rust-src --toolchain stable && \
     curl -L "https://github.com/aya-rs/bpf-linker/releases/latest/download/bpf-linker-$(uname -m)-unknown-linux-musl.tar.zst" \
         | tar --zstd -xf - -C /usr/local/cargo/bin/
 
