@@ -373,6 +373,7 @@ jobs:
     # Gate the :dev tag on the runtime smoke test, not just on it compiling.
     needs: [build-cli, smoke-test]
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
