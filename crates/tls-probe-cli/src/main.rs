@@ -3,6 +3,7 @@ mod commands;
 mod containers;
 mod correlate;
 mod ja4;
+mod logging;
 mod reasm;
 mod record_walk;
 #[cfg(any(target_os = "linux", test))]
@@ -22,7 +23,6 @@ mod self_test;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser)]
 #[command(name = "tls-probe")]
@@ -55,12 +55,7 @@ async fn main() -> Result<()> {
         _ => Level::INFO,
     };
 
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(level)
-        .with_target(false)
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber)?;
+    logging::init(level)?;
 
     match cli.command {
         Commands::Capture(args) => commands::capture::run(args).await,
